@@ -1,0 +1,39 @@
+# Exclude hidden files and directories
+.*
+!.gitignore
+
+# Exclude node_modules
+node_modules/
+
+# Exclude logs
+*.log
+logs/
+
+# Exclude OS files
+.DS_Store
+Thumbs.db
+
+# Exclude build output
+dist/
+build/
+
+# Exclude test files
+test/
+*.test.js
+*.spec.js
+
+# Exclude other documentation
+CHANGELOG.md
+CONTRIBUTING.md
+
+# Exclude package files
+package-lock.json
+npmuser.txt
+
+# Keep publish/runtime essentials tracked
+!package.json
+!LICENSE
+!EXAMPLES.md
+
+# But track .gitignore itself
+!.gitignore

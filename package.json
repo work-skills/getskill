@@ -1,0 +1,58 @@
+{
+    "name": "@workskills/getskill",
+    "version": "1.1.7",
+    "description": "A skill management tool for OpenClaw that enables searching, downloading, and updating skill files from the getskill.work repository",
+    "main": "index.js",
+    "bin": {
+        "getskill": "index.js"
+    },
+    "scripts": {
+        "test": "node verify.js",
+        "verify": "node verify.js",
+        "start": "node index.js",
+        "prepublishOnly": "npm run verify"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/work-skills/getskill.git"
+    },
+    "bugs": {
+        "url": "https://github.com/work-skills/getskill/issues"
+    },
+    "homepage": "https://github.com/work-skills/getskill#readme",
+    "keywords": [
+        "openclaw",
+        "workskills",
+        "skill",
+        "skills",
+        "search",
+        "install",
+        "update",
+        "git",
+        "cli",
+        "claude",
+        "ai",
+        "automation"
+    ],
+    "author": {
+        "name": "workskills.store",
+        "url": "https://workskills.store"
+    },
+    "license": "MIT",
+    "engines": {
+        "node": ">=12.0.0"
+    },
+    "os": [
+        "darwin",
+        "linux",
+        "win32"
+    ],
+    "files": [
+        "index.js",
+        "README.md",
+        "EXAMPLES.md",
+        "LICENSE"
+    ],
+    "dependencies": {},
+    "devDependencies": {}
+}
