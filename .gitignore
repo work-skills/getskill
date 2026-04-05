@@ -1,6 +1,10 @@
 # Exclude hidden files and directories
 .*
 !.gitignore
+!.github/
+!.eslintrc.cjs
+!.prettierrc.json
+!.prettierignore
 
 # Exclude node_modules
 node_modules/
@@ -16,15 +20,14 @@ Thumbs.db
 # Exclude build output
 dist/
 build/
+*.tsbuildinfo
 
 # Exclude test files
 test/
 *.test.js
 *.spec.js
 
-# Exclude other documentation
-CHANGELOG.md
-CONTRIBUTING.md
+# Keep project documentation tracked
 
 # Exclude package files
 package-lock.json

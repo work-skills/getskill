@@ -1,0 +1,6 @@
+node_modules/
+coverage/
+dist/
+clawhub/
+Claw-CLI/
+workskills-getskill-*.tgz

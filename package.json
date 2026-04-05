@@ -1,16 +1,27 @@
 {
     "name": "@workskills/getskill",
-    "version": "1.1.7",
+    "version": "1.1.8",
     "description": "A skill management tool for OpenClaw that enables searching, downloading, and updating skill files from the getskill.work repository",
-    "main": "index.js",
+    "main": "dist/main.js",
+    "types": "dist/main.d.ts",
     "bin": {
-        "getskill": "index.js"
+        "getskill": "dist/main.js"
     },
     "scripts": {
-        "test": "node verify.js",
-        "verify": "node verify.js",
-        "start": "node index.js",
-        "prepublishOnly": "npm run verify"
+        "build": "tsc -p tsconfig.json",
+        "test": "npm run test:unit && npm run verify",
+        "test:unit": "vitest run --config vitest.config.ts",
+        "test:watch": "vitest --config vitest.config.ts",
+        "test:flow": "tsx test-pdf-flow.ts",
+        "verify": "tsx verify.ts",
+        "lint": "eslint . --ext .js,.ts && prettier --check .",
+        "lint:fix": "eslint . --ext .js,.ts --fix && prettier --write .",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "coverage": "vitest run --config vitest.config.ts --coverage",
+        "start": "node dist/main.js",
+        "dev": "tsx main.ts",
+        "prepublishOnly": "npm run build && npm run lint && npm test"
     },
     "repository": {
         "type": "git",
@@ -48,11 +59,22 @@
         "win32"
     ],
     "files": [
-        "index.js",
+        "dist/",
         "README.md",
         "EXAMPLES.md",
         "LICENSE"
     ],
     "dependencies": {},
-    "devDependencies": {}
+    "devDependencies": {
+        "@types/node": "^24.6.1",
+        "@typescript-eslint/eslint-plugin": "^8.46.1",
+        "@typescript-eslint/parser": "^8.46.1",
+        "@vitest/coverage-v8": "^3.2.4",
+        "eslint": "^8.57.1",
+        "eslint-config-prettier": "^9.1.0",
+        "prettier": "^3.6.2",
+        "tsx": "^4.20.6",
+        "typescript": "^5.9.3",
+        "vitest": "^3.2.4"
+    }
 }
