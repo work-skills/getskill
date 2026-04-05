@@ -5,8 +5,11 @@ OpenClaw 技能管理工具 - 从 getskill.work 搜索、下载和更新技能�
 ## 功能特性
 
 - 🔍 从 getskill.work API 搜索技能
+- 🧾 支持 JSON 格式搜索输出（`search --json`）
 - 📥 通过 Git 克隆技能仓库
+- 🏷️ 支持安装/更新指定版本（`--version <tag>`）
 - 🔄 通过 Git pull 更新已安装的技能
+- 🚀 支持将本地技能目录发布到 Git 远程仓库（`publish`）
 - 🛠️ 自动检测并引导安装 Git（如未安装）
 - 📂 跨平台支持（Windows/macOS/Linux）
 - 💾 自动管理技能文件到 OpenClaw skills 目录
@@ -76,7 +79,14 @@ npm link
 getskill search <关键词>
 ```
 
+输出 JSON：
+
+```bash
+getskill search <关键词> --json
+```
+
 示例输出：
+
 ```
 找到 3 个技能:
 
@@ -95,12 +105,20 @@ getskill search <关键词>
 getskill install <技能名称>
 ```
 
+安装指定版本：
+
+```bash
+getskill install <技能名称> --version <tag>
+```
+
 示例：
+
 ```bash
 getskill install commit-helper
 ```
 
 操作流程：
+
 1. 执行 `git clone` 到 `~/.openclaw/skills-cache/commit-helper`
 2. 将整个技能目录复制到 `~/.openclaw/skills/commit-helper`
 
@@ -111,14 +129,57 @@ getskill update <技能名称>
 ```
 
 示例：
+
 ```bash
 getskill update commit-helper
 ```
 
+批量更新所有已安装技能：
+
+```bash
+getskill update --all
+```
+
+切换到指定版本：
+
+```bash
+getskill update <技能名称> --version <tag>
+```
+
 操作流程：
+
 1. 进入缓存目录 `~/.openclaw/skills-cache/commit-helper`
 2. 执行 `git pull`
 3. 重新复制最新的技能目录
+
+### 卸载技能
+
+```bash
+getskill uninstall <技能名称>
+```
+
+仅卸载本地技能目录、保留缓存：
+
+```bash
+getskill uninstall commit-helper --keep-cache
+```
+
+### 查看安装状态
+
+```bash
+getskill inspect <技能名称>
+```
+
+### 发布技能目录
+
+```bash
+getskill publish <目录> --repo <git-url>
+```
+
+可选参数：
+
+- `--branch <name>`: 发布分支（默认 `main`）
+- `--message <text>`: 自定义提交信息
 
 ### 列出本地技能
 
@@ -145,16 +206,19 @@ getskill clean
 ### 配置 API 地址
 
 查看当前 API 地址：
+
 ```bash
 getskill config get
 ```
 
 设置自定义 API 地址：
+
 ```bash
 getskill config set https://your-custom-api.com
 ```
 
 通过环境变量设置：
+
 ```bash
 GETSKILL_BASE_URL=https://your-custom-api.com getskill search keyword
 ```
@@ -168,18 +232,19 @@ GET https://getskill.work/api/v1/repos/search?sort=updated&order=desc&q=<关键�
 ```
 
 响应格式：
+
 ```json
 {
-  "ok": true,
-  "data": [
-    {
-      "id": 1,
-      "full_name": "skills/commit-helper",
-      "description": "帮助生成规范的 git commit 信息",
-      "html_url": "https://getskill.work/skills/commit-helper",
-      "clone_url": "https://getskill.work/skills/commit-helper.git"
-    }
-  ]
+    "ok": true,
+    "data": [
+        {
+            "id": 1,
+            "full_name": "skills/commit-helper",
+            "description": "帮助生成规范的 git commit 信息",
+            "html_url": "https://getskill.work/skills/commit-helper",
+            "clone_url": "https://getskill.work/skills/commit-helper.git"
+        }
+    ]
 }
 ```
 
@@ -215,11 +280,13 @@ const baseUrl = getskill.getBaseUrl();
 ## 技能仓库规范
 
 技能 Git 仓库应包含：
+
 - 一个或多个 `.md` 技能文件（非 README）
 - 可选的 `README.md` 说明文档
 - 可选的示例代码或配置文件
 
 示例结构：
+
 ```
 commit-helper/
 ├── commit-helper.md    # 技能文件（仓库目录会被整体复制）
@@ -229,27 +296,49 @@ commit-helper/
 
 ## 依赖
 
-- Node.js >= 12
+- Node.js >= 12（运行 CLI）
+- Node.js 18+（开发与测试工具）
 - Git 命令行工具（如未安装，程序会自动引导安装）
+
+## 开发与质量保障
+
+```bash
+npm install
+npm run build
+npm run lint
+npm test
+npm run test:flow
+npm run coverage
+```
+
+当前源码已迁移为 **TypeScript**，发布产物位于 `dist/`。
+
+开发文档：
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`docs/architecture.md`](docs/architecture.md)
 
 ## Git 自动检测与安装
 
 首次运行 `install` 或 `update` 命令时，程序会自动检测系统是否已安装 Git：
 
 ### Windows
+
 - **自动下载**: 自动下载 Git 安装程序并启动安装向导
 - **手动安装**: 如果自动下载失败，会提示访问 https://git-scm.com/download/win
 
 ### macOS
+
 - 提示使用 Homebrew 安装：`brew install git`
 - 如未安装 Homebrew，会提示访问 https://brew.sh/
 
 ### Linux
+
 - 提示使用系统包管理器安装：
-  - Ubuntu/Debian: `sudo apt-get install git`
-  - CentOS/RHEL: `sudo yum install git`
-  - Fedora: `sudo dnf install git`
-  - Arch: `sudo pacman -S git`
+    - Ubuntu/Debian: `sudo apt-get install git`
+    - CentOS/RHEL: `sudo yum install git`
+    - Fedora: `sudo dnf install git`
+    - Arch: `sudo pacman -S git`
 
 ## 许可证
 

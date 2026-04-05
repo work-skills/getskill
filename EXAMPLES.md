@@ -174,7 +174,6 @@ const getskill = require('@workskills/getskill');
         // 列出本地技能
         const localSkills = getskill.listLocalSkills();
         console.log('本地技能:', localSkills);
-
     } catch (error) {
         console.error('错误:', error.message);
     }
@@ -279,13 +278,17 @@ $ tree ~/.openclaw
 ## 常见问题
 
 ### Q: Git 安装后仍提示未安装？
+
 A: Windows 用户需要重启终端或系统，以便环境变量生效。
 
 ### Q: 如何卸载技能？
+
 A: 直接删除 `~/.openclaw/skills/` 目录下的对应技能目录即可。
 
 ### Q: 缓存目录可以删除吗？
+
 A: 可以使用 `getskill clean` 清理缓存，下次更新技能时会重新克隆。
 
 ### Q: 如何手动指定 Git 路径？
+
 A: 确保 `git` 命令在系统 PATH 中，或修改 `~/.bashrc` / `~/.zshrc` 添加 Git 路径。
