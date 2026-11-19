@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GetSkill - AI 技能下载站</title>
+  <meta name="description" content="GetSkill：免费开源的 AI Agent 技能包下载站，即下即用。">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body data-page="index">
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="logo" href="index.html">⚡ GetSkill</a>
+      <nav class="nav">
+        <a href="index.html" class="active">技能库</a>
+        <a href="https://github.com/workskills/getskill" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h1>AI 技能，即下即用</h1>
+      <p>精选 Agent 技能包，解压放入你的 skills 目录即可使用。</p>
+      <div class="search-box">
+        <input type="search" id="search-input" placeholder="搜索技能名称、描述或标签…" autocomplete="off">
+      </div>
+      <div class="category-chips" id="category-chips"></div>
+    </section>
+
+    <section>
+      <div class="list-meta"><span id="result-count"></span></div>
+      <div class="skill-grid" id="skill-grid"></div>
+      <div class="empty-state" id="empty-state" hidden>
+        <p>😕 没有找到匹配的技能</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© 2026 GetSkill · Powered by Cloudflare Pages</p>
+    </div>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

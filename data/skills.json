@@ -1,0 +1,74 @@
+{
+    "skills":  [
+                   {
+                       "id":  "pdf-toolkit",
+                       "name":  "PDF 工具箱",
+                       "description":  "PDF 文本提取、合并拆分、页面旋转与加水印，基于 pypdf 的常用操作集合。",
+                       "category":  "文档处理",
+                       "tags":  [
+                                    "pdf",
+                                    "pypdf",
+                                    "文档"
+                                ],
+                       "version":  "1.0.0",
+                       "author":  "GetSkill",
+                       "updated":  "2026-11-20",
+                       "file":  "skills/pdf-toolkit.zip",
+                       "size":  800,
+                       "readme":  "---\r\nname: pdf-toolkit\r\ndescription: PDF 文档处理技能：提取文本、合并拆分、页面旋转与加水印。当用户需要处理 PDF 文件时使用。\r\n---\r\n\r\n# PDF Toolkit\r\n\r\n处理 PDF 文件的常用操作集合。\r\n\r\n## 功能\r\n\r\n- **提取文本**：从 PDF 中提取纯文本，支持按页范围提取\r\n- **合并 / 拆分**：将多个 PDF 合并为一个，或按页拆分成多个文件\r\n- **页面操作**：旋转、删除、重排页面\r\n- **加水印**：为每页添加文字水印\r\n\r\n## 使用方法\r\n\r\n依赖 Python 库 `pypdf`：\r\n\r\n```bash\r\npip install pypdf\r\n```\r\n\r\n### 提取文本\r\n\r\n```python\r\nfrom pypdf import PdfReader\r\n\r\nreader = PdfReader(\"input.pdf\")\r\ntext = \"\\n\".join(page.extract_text() for page in reader.pages)\r\n```\r\n\r\n### 合并 PDF\r\n\r\n```python\r\nfrom pypdf import PdfWriter\r\n\r\nwriter = PdfWriter()\r\nfor path in [\"a.pdf\", \"b.pdf\"]:\r\n    writer.append(path)\r\nwriter.write(\"merged.pdf\")\r\nwriter.close()\r\n```\r\n\r\n## 注意事项\r\n\r\n- 扫描版 PDF 无法直接提取文本，需先做 OCR\r\n- 加密 PDF 需先调用 `reader.decrypt(password)`"
+                   },
+                   {
+                       "id":  "excel-report",
+                       "name":  "Excel 报表",
+                       "description":  "读取 CSV/JSON 数据，分组汇总并生成带表头样式、冻结首行的 xlsx 报表。",
+                       "category":  "数据分析",
+                       "tags":  [
+                                    "excel",
+                                    "pandas",
+                                    "openpyxl",
+                                    "报表"
+                                ],
+                       "version":  "1.0.0",
+                       "author":  "GetSkill",
+                       "updated":  "2026-11-20",
+                       "file":  "skills/excel-report.zip",
+                       "size":  948,
+                       "readme":  "---\r\nname: excel-report\r\ndescription: Excel 报表生成技能：读取数据、透视汇总、生成带样式的 xlsx 报表。当用户需要生成 Excel 报表时使用。\r\n---\r\n\r\n# Excel Report\r\n\r\n从原始数据快速生成带样式的 Excel 报表。\r\n\r\n## 功能\r\n\r\n- 读取 CSV / JSON / 数据库查询结果\r\n- 分组汇总、透视表计算\r\n- 输出带表头样式、冻结首行、自动列宽的 xlsx\r\n\r\n## 使用方法\r\n\r\n依赖 `openpyxl` 与 `pandas`：\r\n\r\n```bash\r\npip install pandas openpyxl\r\n```\r\n\r\n### 生成报表\r\n\r\n```python\r\nimport pandas as pd\r\n\r\ndf = pd.read_csv(\"sales.csv\")\r\nsummary = df.groupby(\"region\")[\"amount\"].sum().reset_index()\r\n\r\nwith pd.ExcelWriter(\"report.xlsx\", engine=\"openpyxl\") as writer:\r\n    summary.to_excel(writer, sheet_name=\"汇总\", index=False)\r\n    df.to_excel(writer, sheet_name=\"明细\", index=False)\r\n```\r\n\r\n### 添加样式\r\n\r\n```python\r\nfrom openpyxl.styles import Font, PatternFill\r\n\r\nws = writer.sheets[\"汇总\"]\r\nfor cell in ws[1]:\r\n    cell.font = Font(bold=True, color=\"FFFFFF\")\r\n    cell.fill = PatternFill(\"solid\", fgColor=\"4F6EF7\")\r\nws.freeze_panes = \"A2\"\r\n```\r\n\r\n## 注意事项\r\n\r\n- 超过 100 万行请改用 CSV 或分 sheet 输出\r\n- 日期列先转 `pd.to_datetime` 再写入，避免格式错乱"
+                   },
+                   {
+                       "id":  "web-scraper",
+                       "name":  "网页抓取",
+                       "description":  "抓取静态页面并用 CSS 选择器提取结构化数据，导出 CSV/JSON，内置限速与重试。",
+                       "category":  "网络工具",
+                       "tags":  [
+                                    "爬虫",
+                                    "requests",
+                                    "bs4"
+                                ],
+                       "version":  "1.0.0",
+                       "author":  "GetSkill",
+                       "updated":  "2026-11-20",
+                       "file":  "skills/web-scraper.zip",
+                       "size":  1009,
+                       "readme":  "---\r\nname: web-scraper\r\ndescription: 网页抓取技能：抓取页面、解析结构化数据、导出 CSV/JSON，内置限速与重试。当用户需要采集网页数据时使用。\r\n---\r\n\r\n# Web Scraper\r\n\r\n轻量网页数据采集流程。\r\n\r\n## 功能\r\n\r\n- 抓取静态页面并解析 HTML\r\n- CSS 选择器提取结构化字段\r\n- 导出 CSV / JSON\r\n- 请求限速、失败重试、UA 设置\r\n\r\n## 使用方法\r\n\r\n依赖 `requests` 与 `beautifulsoup4`：\r\n\r\n```bash\r\npip install requests beautifulsoup4\r\n```\r\n\r\n### 抓取示例\r\n\r\n```python\r\nimport time\r\nimport requests\r\nfrom bs4 import BeautifulSoup\r\n\r\ndef fetch(url, retries=3):\r\n    for i in range(retries):\r\n        try:\r\n            r = requests.get(url, timeout=10,\r\n                             headers={\"User-Agent\": \"Mozilla/5.0\"})\r\n            r.raise_for_status()\r\n            return r.text\r\n        except requests.RequestException:\r\n            time.sleep(2 ** i)\r\n    return None\r\n\r\nsoup = BeautifulSoup(fetch(\"https://example.com\"), \"html.parser\")\r\nitems = [\r\n    {\"title\": a.get_text(strip=True), \"url\": a[\"href\"]}\r\n    for a in soup.select(\"a.item-link\")\r\n]\r\n```\r\n\r\n## 注意事项\r\n\r\n- 遵守目标站点 robots.txt 与服务条款\r\n- 每次请求间隔至少 1 秒，避免对目标站点造成压力\r\n- 动态渲染页面需改用浏览器自动化方案"
+                   },
+                   {
+                       "id":  "image-compress",
+                       "name":  "图片压缩",
+                       "description":  "批量压缩 PNG/JPG、转换 WebP/AVIF、生成缩略图，基于 Pillow。",
+                       "category":  "媒体处理",
+                       "tags":  [
+                                    "图片",
+                                    "webp",
+                                    "pillow",
+                                    "压缩"
+                                ],
+                       "version":  "1.0.0",
+                       "author":  "GetSkill",
+                       "updated":  "2026-11-20",
+                       "file":  "skills/image-compress.zip",
+                       "size":  826,
+                       "readme":  "---\r\nname: image-compress\r\ndescription: 图片压缩与格式转换技能：批量压缩 PNG/JPG、转 WebP、生成缩略图。当用户需要优化图片体积时使用。\r\n---\r\n\r\n# Image Compress\r\n\r\n批量图片压缩与格式转换。\r\n\r\n## 功能\r\n\r\n- 批量压缩 PNG / JPG（可控质量）\r\n- 转换为 WebP / AVIF 格式\r\n- 按最长边生成缩略图\r\n- 保留 EXIF 或按需剥离\r\n\r\n## 使用方法\r\n\r\n依赖 `Pillow`：\r\n\r\n```bash\r\npip install Pillow\r\n```\r\n\r\n### 批量转 WebP\r\n\r\n```python\r\nfrom pathlib import Path\r\nfrom PIL import Image\r\n\r\nfor p in Path(\"images\").glob(\"*.jpg\"):\r\n    img = Image.open(p)\r\n    img.save(p.with_suffix(\".webp\"), \"WEBP\", quality=82, method=6)\r\n```\r\n\r\n### 生成缩略图\r\n\r\n```python\r\nimg = Image.open(\"photo.jpg\")\r\nimg.thumbnail((800, 800))\r\nimg.save(\"photo_thumb.jpg\", quality=85, optimize=True)\r\n```\r\n\r\n## 注意事项\r\n\r\n- WebP quality 建议 75–85，肉眼几乎无损\r\n- 含透明通道的 PNG 转 JPG 前需先铺白底\r\n- 处理前备份原图，压缩为有损操作"
+                   }
+               ]
+}
