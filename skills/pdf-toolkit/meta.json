@@ -1,0 +1,10 @@
+{
+    "name":  "PDF 工具箱",
+    "category":  "文档处理",
+    "author":  "GetSkill",
+    "tags":  [
+                 "pdf",
+                 "pypdf",
+                 "文档"
+             ]
+}

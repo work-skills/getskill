@@ -158,6 +158,10 @@
           '<div class="meta-item"><span class="label">更新日期</span><span class="value">' + esc(skill.updated || '—') + '</span></div>' +
           '<div class="meta-item"><span class="label">文件大小</span><span class="value">' + fmtSize(skill.size) + '</span></div>' +
         '</div>' +
+        (skill.source
+          ? '<p class="detail-source">来源：<a href="' + esc(skill.source) + '" target="_blank" rel="noopener noreferrer">' +
+            esc(skill.source.replace(/^https?:\/\//, '')) + '</a>（版权归原作者所有，遵循原仓库许可证）</p>'
+          : '') +
         '<p class="install-hint">使用方法：下载并解压，将 <code>' + esc(skill.id) + '/</code> 文件夹放入你的 Agent <code>skills</code> 目录即可。</p>' +
         (skill.readme
           ? '<div class="readme-block"><h2>SKILL.md 预览</h2><pre>' + esc(skill.readme) + '</pre></div>'

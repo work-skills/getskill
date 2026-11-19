@@ -1,0 +1,10 @@
+{
+    "category":  "视频生成",
+    "author":  "ferguslindholm",
+    "source":  "https://github.com/ferguslindholm/minimax-h3-video-skill",
+    "tags":  [
+                 "视频",
+                 "MiniMax",
+                 "提示词"
+             ]
+}

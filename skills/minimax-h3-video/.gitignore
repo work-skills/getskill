@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+.h3-jobs/
+*.mp4
+*.part
+.env
+.DS_Store

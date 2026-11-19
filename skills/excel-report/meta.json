@@ -1,0 +1,11 @@
+{
+    "name":  "Excel 报表",
+    "category":  "数据分析",
+    "author":  "GetSkill",
+    "tags":  [
+                 "excel",
+                 "pandas",
+                 "openpyxl",
+                 "报表"
+             ]
+}

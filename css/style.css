@@ -284,3 +284,6 @@ a:hover { text-decoration: underline; }
   .detail-card { padding: 20px; }
   .skill-grid { grid-template-columns: 1fr; }
 }
+/* ===== detail source attribution ===== */
+.detail-source { font-size: .85rem; color: var(--text-muted); margin: 10px 0; word-break: break-all; }
+.detail-source a { color: var(--accent); }

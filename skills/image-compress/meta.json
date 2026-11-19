@@ -1,0 +1,11 @@
+{
+    "name":  "图片压缩",
+    "category":  "媒体处理",
+    "author":  "GetSkill",
+    "tags":  [
+                 "图片",
+                 "webp",
+                 "pillow",
+                 "压缩"
+             ]
+}
