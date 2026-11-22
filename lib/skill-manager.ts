@@ -491,7 +491,9 @@ export async function updateAllSkills(
         }
 
         try {
-            const result = await updateSkill(skillName);
+            const result = await updateSkill(skillName, {
+                force: options.force
+            });
             results.push({
                 skillName,
                 ok: true,

@@ -554,6 +554,25 @@ describe('agent contract behaviors (local server)', () => {
         expect(forced.upToDate).toBeFalsy();
         expect(readInstallState().skills['pdf-extract']).toBeTruthy();
     });
+
+    it('update --force overwrites unmanaged directories (S2 update)', async () => {
+        const home = useTempEnv();
+        const manualDir = path.join(home, 'skills', 'pdf-extract');
+        fs.mkdirSync(manualDir, { recursive: true });
+        fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+        await expect(updateSkill('pdf-extract')).rejects.toMatchObject({
+            code: 'UNMANAGED_SKILL'
+        });
+
+        const forced = await updateSkill('pdf-extract', { force: true });
+        expect(forced.upToDate).toBeFalsy();
+        expect(forced.version).toBe('1.0.0');
+        expect(readInstallState().skills['pdf-extract']).toBeTruthy();
+        expect(
+            fs.readFileSync(path.join(manualDir, 'SKILL.md'), 'utf8')
+        ).not.toBe('# manual');
+    });
 });
 
 describe('cli json envelope (spawned process)', () => {
@@ -622,6 +641,48 @@ describe('cli json envelope (spawned process)', () => {
         );
         expect(forced.code).toBe(0);
         expect(JSON.parse(forced.stdout).results[0].ok).toBe(true);
+    });
+
+    it('update --dry-run/--force mirror unmanaged protection (S2 update)', async () => {
+        const home = useTempEnv();
+        const manualDir = path.join(home, 'skills', 'pdf-extract');
+        fs.mkdirSync(manualDir, { recursive: true });
+        fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+        const plan = await runCli(
+            ['update', 'pdf-extract', '--dry-run', '--json'],
+            home
+        );
+        expect(plan.code).toBe(1);
+        expect(JSON.parse(plan.stdout).results[0]).toMatchObject({
+            ok: false,
+            action: 'blocked',
+            error: { code: 'UNMANAGED_SKILL' }
+        });
+
+        const forcedPlan = await runCli(
+            ['update', 'pdf-extract', '--dry-run', '--force', '--json'],
+            home
+        );
+        expect(forcedPlan.code).toBe(0);
+        expect(JSON.parse(forcedPlan.stdout).results[0].ok).toBe(true);
+        expect(fs.readFileSync(path.join(manualDir, 'SKILL.md'), 'utf8')).toBe(
+            '# manual'
+        );
+
+        const refused = await runCli(['update', 'pdf-extract', '--json'], home);
+        expect(refused.code).toBe(1);
+        expect(JSON.parse(refused.stdout).error.code).toBe('UNMANAGED_SKILL');
+
+        const forced = await runCli(
+            ['update', 'pdf-extract', '--force', '--json'],
+            home
+        );
+        expect(forced.code).toBe(0);
+        expect(JSON.parse(forced.stdout).status).toBe('updated');
+        expect(
+            fs.readFileSync(path.join(manualDir, 'SKILL.md'), 'utf8')
+        ).not.toBe('# manual');
     });
 
     it('clean refuses when cache dir equals skills dir (H8)', async () => {

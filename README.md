@@ -64,7 +64,7 @@ getskill agents
 
 默认 `agent = auto`：按「历史安装记录 → 已存在且非空的技能目录 → 已存在的 Agent 根目录」顺序自动识别；都识别不到时使用 `~/.claude/skills`。
 
-> **安全门禁**：自动识别只是启发式猜测，可能选错 Agent（如历史记录过期、多 Agent 共存）。因此 `install` / `update` / `update --all` / `uninstall` 要求**显式指定** `agent` 或 `skills-dir`（配置文件、`--agent`/`--skills-dir` 参数、`GETSKILL_AGENT`/`GETSKILL_SKILLS_DIR` 环境变量任一即可）；若技能目录仅来自自动识别，命令会直接报错（`TARGET_NOT_CONFIGURED`）并给出设置指引，避免把技能装到/误删非当前 Agent 目录的文件。`search` / `index` / `show` / `list` / `path` / `inspect` 等只读命令不受影响。
+> **安全门禁**：自动识别只是启发式猜测，可能选错 Agent（如历史记录过期、多 Agent 共存）。因此 `install` / `update` / `update --all` / `uninstall` 要求**显式指定** `agent` 或 `skills-dir`（配置文件、`--agent`/`--skills-dir` 参数、`GETSKILL_AGENT`/`GETSKILL_SKILLS_DIR` 环境变量任一即可）；若技能目录仅来自自动识别，命令会直接报错（`TARGET_NOT_CONFIGURED`）并给出设置指引，避免把技能装到/误删非当前 Agent 目录的文件。`--dry-run` 预演受同一门禁约束（不会出现「预演通过、执行被拒」）。`search` / `index` / `show` / `list` / `path` / `inspect` 等只读命令不受影响。
 
 不在预设列表中的 Agent，直接指定技能目录即可（三种方式任选一种）：
 
@@ -192,16 +192,22 @@ getskill install pdf-toolkit
 
 1. 在静态索引中定位技能条目，获取下载地址
 2. 若同版本已安装（安装记录版本一致且技能目录存在），跳过下载并提示；`--force` 可强制重装
-3. 下载 ZIP 包到缓存目录（默认 `~/.getskill/cache/<技能名称>`）并解压
-4. 将技能目录复制到当前 Agent 的技能目录，并记录已安装版本
+3. 若目标目录已存在但**没有 getskill 安装记录**（手工放入的技能），默认拒绝覆盖并报 `UNMANAGED_SKILL`；确认覆盖时显式加 `--force`
+4. 下载 ZIP 包到缓存目录（默认 `~/.getskill/cache/<技能名称>`）并解压
+5. 将技能目录复制到当前 Agent 的技能目录，并记录已安装版本
 
 ```bash
-# 强制重装（忽略“同版本已安装”的跳过逻辑）
+# 强制重装（忽略“同版本已安装”的跳过逻辑；也用于确认覆盖无安装记录的手工目录）
 getskill install pdf-toolkit --force
 
 # 强制刷新技能索引缓存后再解析（索引缓存滞后、站点刚更新时使用）
 getskill install pdf-toolkit --refresh
+
+# 只读预演：不下载 ZIP、不写任何文件（包括索引缓存），门禁与真实安装一致
+getskill install pdf-toolkit --dry-run --json
 ```
+
+`install --dry-run` 的每项计划含 `action`（`install` / `update` / `skip` / `downgrade` / `blocked`）、`current_version` / `target_version` / `local_modified` 等字段；未管理目录返回 `action: "blocked"`、`ok: false`（附 `UNMANAGED_SKILL`）并以非零码退出，加 `--force` 后预演与真实执行同样放行。
 
 ### 更新技能
 
@@ -226,7 +232,8 @@ getskill update --all --prune
 1. 读取本地已安装技能的版本记录（仅统计属于当前技能目录的记录）
 2. 强制刷新技能索引缓存，拉取远端最新版本号（`update --all` 每进程只刷新一次）
 3. 版本一致时提示“已是最新版本”；不一致时重新下载 ZIP 并覆盖安装
-4. 索引中已不存在的技能会被标记为“已跳过”，不算失败；加 `--prune` 可清理这些失效记录
+4. 与 install 相同，覆盖**无安装记录**的手工目录默认拒绝（`UNMANAGED_SKILL`），需 `--force` 确认；`update --dry-run` 会如实预演该保护（`action: "blocked"`、`ok: false`、非零退出）
+5. 索引中已不存在的技能会被标记为“已跳过”，不算失败；加 `--prune` 可清理这些失效记录
 
 ### 卸载技能
 
@@ -298,7 +305,8 @@ getskill install pdf-toolkit --json
 #   "skill_md_path": "...", "next_step": "...", "reload_command": null, "reloaded": null }
 
 getskill install a b c --json          # 批量: { command, total, succeeded, failed, results: [...] }
-getskill install pdf-toolkit --dry-run --json   # 只读预演计划，不下载不写入
+getskill install pdf-toolkit --dry-run --json   # 只读预演计划：不下载、不写任何文件（含索引缓存），
+                                               # 门禁与真实安装一致（TARGET_NOT_CONFIGURED / UNMANAGED_SKILL）
 getskill update pdf-toolkit --json     # status: "updated" | "up_to_date"
 getskill update --all --json           # { command, all: true, total, succeeded, skipped, failed, pruned, results }
                                        # 每项含 status: updated/up_to_date/stale/missing/failed 与 code；有失败时退出码非零
@@ -322,19 +330,19 @@ getskill search "pdf merge" --json     # 多词 AND 匹配；信封含 total/pag
 }
 ```
 
-| code                    | 含义                                                           |
-| ----------------------- | -------------------------------------------------------------- |
-| `NETWORK_ERROR`         | 网络/站点不可用（无缓存可回退）、跨域技能包被拒                |
-| `SKILL_NOT_FOUND`       | 索引中不存在该技能（附 `suggestions` 相近名称建议）            |
-| `VERSION_NOT_AVAILABLE` | 站点仅提供最新版本，`--version` 指定的版本不可用               |
-| `TARGET_NOT_CONFIGURED` | 技能目录仅来自自动识别，需显式指定 agent/skills-dir            |
-| `STATE_LOCKED`          | 状态文件被其他进程占用（`state.json.lock`），稍后重试          |
-| `INVALID_ARGS`          | 未知命令/选项、参数缺失或非法数值、不安全技能名                |
-| `AMBIGUOUS_SKILL`       | 名称归一化后匹配多个不同技能，需使用完整 id                    |
-| `EXTRACT_ERROR`         | 技能包解压失败（损坏/CRC 不符/超限/含符号链接）                |
-| `PACKAGE_INVALID`       | 技能包缺少技能 .md 文件，包无效                                |
-| `UNMANAGED_SKILL`       | 目标目录无安装记录（手工技能）：卸载/覆盖安装需 `--force` 确认 |
-| `UNKNOWN_ERROR`         | 其他未分类错误                                                 |
+| code                    | 含义                                                                        |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `NETWORK_ERROR`         | 网络/站点不可用（无缓存可回退）、跨域技能包被拒                             |
+| `SKILL_NOT_FOUND`       | 索引中不存在该技能（附 `suggestions` 相近名称建议）                         |
+| `VERSION_NOT_AVAILABLE` | 站点仅提供最新版本，`--version` 指定的版本不可用                            |
+| `TARGET_NOT_CONFIGURED` | 技能目录仅来自自动识别，需显式指定 agent/skills-dir                         |
+| `STATE_LOCKED`          | 状态文件被其他进程占用（`state.json.lock`），稍后重试                       |
+| `INVALID_ARGS`          | 未知命令/选项、参数缺失或非法数值、不安全技能名                             |
+| `AMBIGUOUS_SKILL`       | 名称归一化后匹配多个不同技能，需使用完整 id                                 |
+| `EXTRACT_ERROR`         | 技能包解压失败（损坏/CRC 不符/超限/含符号链接）                             |
+| `PACKAGE_INVALID`       | 技能包缺少技能 .md 文件，包无效                                             |
+| `UNMANAGED_SKILL`       | 目标目录无安装记录（手工技能）：卸载或 install/update 覆盖需 `--force` 确认 |
+| `UNKNOWN_ERROR`         | 其他未分类错误                                                              |
 
 其他契约要点：
 
@@ -344,6 +352,7 @@ getskill search "pdf merge" --json     # 多词 AND 匹配；信封含 total/pag
 - 覆盖被本地修改过的技能前会告警，信封 `local_modified=true`（安装时记录内容哈希，按原始字节计算）。
 - install/update 信封含 `warnings[]`：跳过符号链接/超大文件、包体积与索引声明不一致等非致命警告，Agent 应检查。
 - `update --all` 对「记录在、目录被手动删」的技能报 `missing` 并跳过，不会静默重装；`update --all --dry-run` 与真实执行语义一致（仅 `SKILL_NOT_FOUND` 视为 stale，其他错误按失败预演并非零退出）。
+- **dry-run 诚实性**：install/update/uninstall 的 `--dry-run` 与真实执行受同一门禁（`TARGET_NOT_CONFIGURED` / `UNMANAGED_SKILL`），被拒项返回 `ok: false`（`action: "blocked"`）并以非零码退出；预演不写任何文件，连索引缓存也不落盘。
 - `status --json` 附 `cli_version` / `lock_pid` / `lock_stale`；`clean --dry-run` 返回 `would_remove` 路径列表而不删除。
 - 全局 `--timeout <ms>` 调整网络超时（默认 60000）；`--` 之后全部视为位置参数。信封只增字段不删字段。
 
@@ -365,6 +374,8 @@ getskill clean
 
 清理 ZIP 下载与解压缓存以及技能索引缓存 `skills-index.json`（不影响技能目录中的文件），同时清理旧版本遗留的 `~/.openclaw/skills-cache`。下次搜索会重新下载索引。
 
+> **误删保护**：若缓存目录（或旧版遗留缓存目录）**等于或包含**当前技能目录（`cache-dir` 误配置），`clean` 会直接拒绝执行并报 `INVALID_ARGS`（`--dry-run` 同样拒绝），避免把已安装技能当作缓存删掉；请用 `getskill config set cache-dir <独立目录>` 调整后重试。
+
 ```bash
 getskill clean --keep-index   # 保留索引缓存，只清理技能包缓存
 getskill clean --dry-run      # 预演：列出将删除的路径（--json 返回 would_remove），不执行删除
@@ -379,14 +390,13 @@ getskill --version
 
 ## 安全边界
 
-getskill 会下载并解压远程内容、删除本地目录，因此内置以下防护（3.2.1 起）：
+getskill 会下载并解压远程内容、删除本地目录，因此内置以下防护（3.2.1 起，3.3.x 持续加固）：
 
-- **同源下载策略**：技能包地址必须与索引源（`base-url`）同源；索引中指向其他域名的包默认拒绝下载（`NETWORK_ERROR`）。确认信任该来源时设置 `GETSKILL_ALLOW_CROSS_ORIGIN=1` 放行。`search`/`show` 仅展示 URL，不受影响。
-- **传输安全**：拒绝 HTTPS→HTTP 的降级重定向；非本机回环地址的明文 HTTP 下载会给出告警。响应体积上限：索引等文本 10MB，技能包下载 100MB。
+- **同源下载策略**：技能包地址必须与索引源（`base-url`）同源；索引中指向其他域名的包默认拒绝下载（`NETWORK_ERROR`）。下载/请求的**每一跳重定向**都执行同一策略（防 302 绕过跨域拒绝）。确认信任该来源时设置 `GETSKILL_ALLOW_CROSS_ORIGIN=1` 放行。`search`/`show` 仅展示 URL，不受影响。
+- **传输安全**：拒绝 HTTPS→HTTP 的降级重定向；非本机回环地址的明文 HTTP 下载会给出告警。响应体积上限：索引等文本 10MB，技能包下载 100MB。文本响应按字节收集后统一 UTF-8 解码（防多字节字符跨 chunk 损坏）。
 - **解压防护**：zip 单文件解压上限 20MB、总量 200MB（防解压炸弹，`inflateRawSync` 带 `maxOutputLength`）；逐条目 CRC32 校验；拒绝符号链接条目；条目路径段拒绝绝对路径、`..`、盘符/NTFS 备用数据流字符（`:`）、Windows 保留设备名（CON/NUL/COM1-9/LPT1-9）、控制字符与结尾点/空格。
 - **技能名校验**：install/update/uninstall/inspect 入口即拒绝不安全名称（`..`、`.`、`CON` 等，`INVALID_ARGS`）；安装/卸载目标路径必须严格位于技能目录下一层（纵深防御）。
-- **删除保护**：卸载无安装记录的手工技能目录默认拒绝（`UNMANAGED_SKILL`，需 `--force`）；install/update 覆盖无安装记录的手工目录同样默认拒绝（`--force` 确认）；state 记录中的解压路径（`repoPath`）只有严格位于缓存根目录或 `~/.getskill` 之内（不含根目录本身）才允许删除。
-- **传输与清理防护**：下载/请求的每一跳重定向都执行与索引同源的策略（防 302 绕过跨域拒绝）；文本响应按字节收集后统一 UTF-8 解码（防多字节字符跨 chunk 损坏）；`clean` 在缓存目录等于或包含技能目录时直接拒绝（防误删已安装技能）。
+- **删除保护**：卸载无安装记录的手工技能目录默认拒绝（`UNMANAGED_SKILL`，需 `--force`）；install/update 覆盖无安装记录的手工目录同样默认拒绝（`--force` 确认）；state 记录中的解压路径（`repoPath`）只有严格位于缓存根目录或 `~/.getskill` 之内（不含根目录本身、且不包含技能目录）才允许删除；`clean` 在缓存目录等于或包含技能目录时直接拒绝（防误删已安装技能）。
 - **状态文件健壮性**：`state.json` 原子写（tmp+rename）；损坏时告警并备份为 `state.json.corrupt-<时间戳>` 后按空状态继续；残留锁通过 rename 认领回收，避免并发互删。
 - **并发安全**：同技能并发安装使用唯一临时 zip/解压目录名，互不覆盖；「复制文件+写 state」整体持锁。
 - **重载命令**：仅执行用户显式配置的重载命令（Agent 预设或 `GETSKILL_RESTART_CMD`），默认 60 秒超时（`GETSKILL_RESTART_TIMEOUT_MS` 可调），输出捕获上限 1MB。

@@ -152,6 +152,8 @@ export interface DownloadOptions {
 export interface UpdateAllOptions {
     /** 同时清理索引中已不存在的历史安装记录。 */
     prune?: boolean;
+    /** 确认覆盖无安装记录的手工技能目录（UNMANAGED_SKILL 保护）。 */
+    force?: boolean;
 }
 
 export interface UpdateAllResult {

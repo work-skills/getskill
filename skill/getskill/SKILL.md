@@ -76,6 +76,7 @@ getskill update --all --dry-run    # 预演；目录被手动删的技能报 mis
 getskill update --all --prune      # 同时清理已下架技能的本地记录
 getskill uninstall <名称> --json   # 未安装时 status=not_installed（不是 removed）
 getskill uninstall <名称> --force  # 无安装记录的手工目录默认拒删（UNMANAGED_SKILL），--force 才删
+getskill install <名称> --force    # 覆盖无安装记录的手工目录同样需 --force 确认（update 亦然）
 getskill clean --dry-run --json    # 预演清理：would_remove 列出将删除的路径
 getskill clean --keep-index --json # 清理缓存但保留索引缓存
 ```
@@ -101,4 +102,4 @@ getskill clean --keep-index --json # 清理缓存但保留索引缓存
 - `-V <tag>` 是技能版本；`-v`/`--version` 是 CLI 版本。网络超时可用 `--timeout <ms>` 调整（默认 60000）。
 - 索引缓存 TTL 1 天；`update` 会强制刷新（install 可加 `--refresh`）；离线时搜索回退旧缓存（信封 `index.stale=true`）。
 - install/update 不会静默降级：本地版本更高时视为最新；确需旧版本用显式 `--version`。非 semver 版本（如 unknown）视为低于任何正式版本，会触发一次更新。
-- 安全边界：技能包默认仅允许与索引同源下载（信任跨域源时设 `GETSKILL_ALLOW_CROSS_ORIGIN=1`）；拒绝 HTTPS→HTTP 降级重定向；zip 解压限额单文件 20MB/总量 200MB，校验 CRC 并拒绝符号链接；技能名禁止 `..`/盘符/保留设备名等不安全字符。
+- 安全边界：技能包默认仅允许与索引同源下载，每一跳重定向同样校验（信任跨域源时设 `GETSKILL_ALLOW_CROSS_ORIGIN=1`）；拒绝 HTTPS→HTTP 降级重定向；zip 解压限额单文件 20MB/总量 200MB，校验 CRC 并拒绝符号链接；技能名禁止 `..`/盘符/保留设备名等不安全字符。

@@ -1401,7 +1401,13 @@ export async function cli(): Promise<void> {
                                 continue;
                             }
                             try {
-                                plans.push(await planSkillAction(name));
+                                plans.push(
+                                    await planSkillAction(
+                                        name,
+                                        undefined,
+                                        options.force === true
+                                    )
+                                );
                             } catch (error) {
                                 // 与真实 update --all 对齐：仅 SKILL_NOT_FOUND 视为 stale，
                                 // 其他错误（网络/版本等）按失败预演并以非零码退出
@@ -1442,7 +1448,10 @@ export async function cli(): Promise<void> {
                     }
 
                     const { results, pruned } = await runCaptured(json, () =>
-                        updateAllSkills({ prune: options.prune === true })
+                        updateAllSkills({
+                            prune: options.prune === true,
+                            force: options.force === true
+                        })
                     );
                     const succeeded = results.filter((item) => item.ok).length;
                     const skipped = results.filter((item) => item.skipped);
@@ -1528,6 +1537,7 @@ export async function cli(): Promise<void> {
                 errorSkill = restArgs[0];
                 const updateOptions = {
                     version: requestedVersion,
+                    force: options.force === true,
                     refresh: options.refresh === true
                 };
 
@@ -1536,7 +1546,11 @@ export async function cli(): Promise<void> {
                     for (const name of restArgs) {
                         try {
                             plans.push(
-                                await planSkillAction(name, requestedVersion)
+                                await planSkillAction(
+                                    name,
+                                    requestedVersion,
+                                    options.force === true
+                                )
                             );
                         } catch (error) {
                             plans.push({

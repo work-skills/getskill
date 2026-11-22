@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.3.1] - 2026-11-22
+
+### Fixed
+
+- **`update --force` wiring**: 3.3.0 added `UNMANAGED_SKILL` protection inside `updateSkill()`, but the CLI never forwarded `--force` (single update, `update --dry-run`, `update --all` and its dry-run), leaving the documented escape hatch unusable. `--force` is now forwarded end-to-end (`UpdateAllOptions.force` added); `update --dry-run` mirrors the protection (`action: "blocked"`, `ok: false`, non-zero exit) and honors `--force` exactly like real execution
+
+### Docs
+
+- README synced with current behavior: dry-run gating / zero-write contract (no index-cache writes), install/update unmanaged-directory protection and plan fields, `clean` directory-overlap guard, consolidated security-boundary list
+
 ## [3.3.0] - 2026-11-22
 
 Follow-up security & interaction audit (items H7–H8 / S2-install / S3-strict / N9–N10). All findings were reproduced against 3.2.1 before fixing.
