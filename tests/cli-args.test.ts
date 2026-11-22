@@ -64,4 +64,26 @@ describe('parseCommandOptions', () => {
         expect(positionals).toEqual(['install', 'pdf-extract']);
         expect(options.version).toBe('2.0.0');
     });
+
+    it('parses --refresh as a boolean flag', () => {
+        const { positionals, options } = parseCommandOptions([
+            'install',
+            '--refresh',
+            'pdf-extract'
+        ]);
+        expect(positionals).toEqual(['install', 'pdf-extract']);
+        expect(options.refresh).toBe(true);
+    });
+
+    it('duplicate options keep the last value', () => {
+        const { options } = parseCommandOptions([
+            'search',
+            'pdf',
+            '--limit',
+            '5',
+            '--limit',
+            '10'
+        ]);
+        expect(options.limit).toBe('10');
+    });
 });

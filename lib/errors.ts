@@ -9,15 +9,28 @@ export type GetSkillErrorCode =
     | 'STATE_LOCKED'
     | 'INVALID_ARGS'
     | 'AMBIGUOUS_SKILL'
+    | 'EXTRACT_ERROR'
+    | 'PACKAGE_INVALID'
+    | 'UNMANAGED_SKILL'
     | 'UNKNOWN_ERROR';
 
 export class GetSkillError extends Error {
     readonly code: GetSkillErrorCode;
 
-    constructor(code: GetSkillErrorCode, message: string) {
+    /** SKILL_NOT_FOUND 时的相近技能名建议（did-you-mean，最多 3 个）。 */
+    suggestions?: string[];
+
+    constructor(
+        code: GetSkillErrorCode,
+        message: string,
+        suggestions?: string[]
+    ) {
         super(message);
         this.name = 'GetSkillError';
         this.code = code;
+        if (suggestions && suggestions.length > 0) {
+            this.suggestions = suggestions;
+        }
     }
 }
 

@@ -6,6 +6,7 @@ import {
     MAX_COPY_FILE_SIZE_BYTES,
     getAgentLabel,
     getAgentName,
+    getGetSkillHome,
     getLegacyStateFilePaths,
     getSkillsCacheDirectory,
     getSkillsDirectory,
@@ -14,6 +15,11 @@ import {
 } from './config';
 import logger from './logger';
 import { GetSkillError } from './errors';
+import {
+    assertContainedChildPath,
+    assertSafeSkillName,
+    isPathWithin
+} from './safe-name';
 import { ensureDirectoryExists } from './system';
 import type {
     InstalledSkillSnapshot,
@@ -26,7 +32,12 @@ import type {
 import { resolveSkillRoot } from './unzip';
 
 export function normalizeSkillName(skillName: string): string {
-    return skillName.replace(/^skills\//, '').replace(/[\\/]/g, '_');
+    const normalized = skillName
+        .replace(/^skills\//, '')
+        .replace(/[\\/]/g, '_');
+    // S1：拒绝 `.`/`..`/盘符/保留设备名等，防止路径穿越删除技能根目录
+    assertSafeSkillName(normalized);
+    return normalized;
 }
 
 /** 索引查找键：忽略大小写，`_`/空白/路径分隔统一为 `-`。 */
@@ -111,7 +122,13 @@ export function normalizeCliSkillArgument(rawSkillName: string): string {
         );
     }
 
-    return value.replace(/^\/+|\/+$/g, '');
+    const trimmed = value.replace(/^\/+|\/+$/g, '');
+    // S1：入口即拒绝不安全的本地目录名（.. / 盘符 / 保留设备名等），
+    // 不等到索引查找或文件系统操作才失败
+    assertSafeSkillName(
+        trimmed.replace(/^skills\//, '').replace(/[\\/]/g, '_')
+    );
+    return trimmed;
 }
 
 export function collectSkillMarkdownFiles(
@@ -149,21 +166,17 @@ export function collectSkillMarkdownFiles(
 }
 
 function parseInstallState(content: string): InstallState {
-    try {
-        const parsed = JSON.parse(content) as Partial<InstallState>;
-        if (!parsed || typeof parsed !== 'object') {
-            return { skills: {} };
-        }
-
-        return {
-            skills:
-                parsed.skills && typeof parsed.skills === 'object'
-                    ? parsed.skills
-                    : {}
-        };
-    } catch {
-        return { skills: {} };
+    const parsed = JSON.parse(content) as Partial<InstallState>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('状态文件结构无效（缺少对象根节点）');
     }
+
+    return {
+        skills:
+            parsed.skills && typeof parsed.skills === 'object'
+                ? parsed.skills
+                : {}
+    };
 }
 
 /**
@@ -202,6 +215,9 @@ export function migrateLegacyInstallState(): string | null {
     return null;
 }
 
+/** 每进程只告警/备份一次，避免高频读取时刷屏。 */
+let stateCorruptionHandled = false;
+
 export function readInstallState(): InstallState {
     const stateFilePath = getStateFilePath();
     if (!fs.existsSync(stateFilePath)) {
@@ -214,7 +230,22 @@ export function readInstallState(): InstallState {
 
     try {
         return parseInstallState(fs.readFileSync(stateFilePath, 'utf8'));
-    } catch {
+    } catch (error) {
+        if (!stateCorruptionHandled) {
+            stateCorruptionHandled = true;
+            const message =
+                error instanceof Error ? error.message : String(error);
+            logger.warn(
+                `状态文件损坏，本次按空状态继续（历史安装记录可能丢失）: ${stateFilePath}: ${message}`
+            );
+            try {
+                const backupPath = `${stateFilePath}.corrupt-${Date.now()}`;
+                fs.copyFileSync(stateFilePath, backupPath);
+                logger.warn(`损坏的状态文件已备份: ${backupPath}`);
+            } catch {
+                // 备份失败不阻塞主流程
+            }
+        }
         return { skills: {} };
     }
 }
@@ -222,10 +253,18 @@ export function readInstallState(): InstallState {
 export function writeInstallState(state: InstallState): void {
     const stateFilePath = getStateFilePath();
     ensureDirectoryExists(path.dirname(stateFilePath));
-    fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2), 'utf8');
+    // 原子写：先写临时文件再 rename，避免进程中断留下半截 JSON
+    const tempFile = `${stateFilePath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tempFile, JSON.stringify(state, null, 2), 'utf8');
+    try {
+        fs.renameSync(tempFile, stateFilePath);
+    } catch (error) {
+        fs.rmSync(tempFile, { force: true });
+        throw error;
+    }
 }
 
-const STATE_LOCK_STALE_MS = 30_000;
+export const STATE_LOCK_STALE_MS = 30_000;
 
 function sleepSync(ms: number): void {
     const view = new Int32Array(new SharedArrayBuffer(4));
@@ -260,7 +299,15 @@ function acquireStateLock(): void {
             try {
                 const stat = fs.statSync(lockPath);
                 if (Date.now() - stat.mtimeMs > STATE_LOCK_STALE_MS) {
-                    fs.rmSync(lockPath, { force: true });
+                    // rename 认领：只有抢到的进程负责删除残留锁，
+                    // 避免并发回收时互删对方刚创建的新锁
+                    const claimPath = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+                    try {
+                        fs.renameSync(lockPath, claimPath);
+                        fs.rmSync(claimPath, { force: true });
+                    } catch {
+                        // 其他进程已回收或锁已释放，直接重试
+                    }
                     continue;
                 }
             } catch {
@@ -358,7 +405,8 @@ export function removeInstallState(skillName: string): void {
 
 export function copyDirectoryRecursive(
     sourceDir: string,
-    targetDir: string
+    targetDir: string,
+    warnings?: string[]
 ): void {
     ensureDirectoryExists(targetDir);
 
@@ -373,20 +421,22 @@ export function copyDirectoryRecursive(
         const stat = fs.lstatSync(sourcePath);
 
         if (stat.isSymbolicLink()) {
-            logger.warn(`跳过符号链接: ${sourcePath}`);
+            const message = `跳过符号链接: ${sourcePath}`;
+            logger.warn(message);
+            warnings?.push(message);
             return;
         }
 
         if (entry.isDirectory()) {
-            copyDirectoryRecursive(sourcePath, targetPath);
+            copyDirectoryRecursive(sourcePath, targetPath, warnings);
             return;
         }
 
         if (entry.isFile()) {
             if (stat.size > MAX_COPY_FILE_SIZE_BYTES) {
-                logger.warn(
-                    `跳过超大文件 (${MAX_COPY_FILE_SIZE_BYTES} bytes): ${sourcePath}`
-                );
+                const message = `跳过超大文件 (${MAX_COPY_FILE_SIZE_BYTES} bytes): ${sourcePath}`;
+                logger.warn(message);
+                warnings?.push(message);
                 return;
             }
             fs.copyFileSync(sourcePath, targetPath);
@@ -396,7 +446,8 @@ export function copyDirectoryRecursive(
 
 export function replaceDirectoryAtomically(
     sourceDir: string,
-    targetDir: string
+    targetDir: string,
+    warnings?: string[]
 ): void {
     const parentDir = path.dirname(targetDir);
     const dirName = path.basename(targetDir);
@@ -410,7 +461,7 @@ export function replaceDirectoryAtomically(
     );
 
     ensureDirectoryExists(parentDir);
-    copyDirectoryRecursive(sourceDir, tempDir);
+    copyDirectoryRecursive(sourceDir, tempDir, warnings);
 
     try {
         if (fs.existsSync(targetDir)) {
@@ -435,22 +486,33 @@ export function replaceDirectoryAtomically(
     }
 }
 
-export function copySkillFiles(repoPath: string, skillName: string): string[] {
+export function copySkillFiles(
+    repoPath: string,
+    skillName: string,
+    warnings?: string[]
+): string[] {
     const skillsDir = getSkillsDirectory();
     ensureDirectoryExists(skillsDir);
 
     const localSkillName = normalizeSkillName(skillName);
     const sourceSkillFiles = collectSkillMarkdownFiles(repoPath);
     if (sourceSkillFiles.length === 0) {
-        throw new Error('在仓库中未找到技能 .md 文件');
+        throw new GetSkillError(
+            'PACKAGE_INVALID',
+            '技能包无效: 在仓库中未找到技能 .md 文件'
+        );
     }
 
-    const targetSkillDir = path.join(skillsDir, localSkillName);
-    replaceDirectoryAtomically(repoPath, targetSkillDir);
+    // 纵深防御：安装目标必须严格位于技能目录下一层
+    const targetSkillDir = assertContainedChildPath(skillsDir, localSkillName);
+    replaceDirectoryAtomically(repoPath, targetSkillDir, warnings);
 
     const installedSkillFiles = collectSkillMarkdownFiles(targetSkillDir);
     if (installedSkillFiles.length === 0) {
-        throw new Error('复制后技能目录校验失败：未发现技能 .md 文件');
+        throw new GetSkillError(
+            'PACKAGE_INVALID',
+            '技能包无效: 复制后技能目录校验失败，未发现技能 .md 文件'
+        );
     }
 
     logger.info(`已复制技能目录: ${repoPath} -> ${targetSkillDir}`);
@@ -472,8 +534,9 @@ export function listLocalSkills(): string[] {
 }
 
 /**
- * 计算技能目录内容哈希（相对路径 + 文件内容，排序后 SHA-256）。
+ * 计算技能目录内容哈希（相对路径 + 文件原始字节，排序后 SHA-256）。
  * 与 copyDirectoryRecursive 的口径一致：跳过 .git、符号链接、超大文件。
+ * 按字节而非 utf8 字符串哈希，二进制文件不会再被误判为本地修改。
  * 目录不存在或不可读时返回 null。
  */
 export function computeSkillDirHash(dirPath: string): string | null {
@@ -481,7 +544,7 @@ export function computeSkillDirHash(dirPath: string): string | null {
         return null;
     }
 
-    const parts: string[] = [];
+    const chunks: Buffer[] = [];
 
     const walk = (currentDir: string): void => {
         const entries = fs
@@ -510,8 +573,10 @@ export function computeSkillDirHash(dirPath: string): string | null {
             const relativePath = path
                 .relative(dirPath, fullPath)
                 .replace(/\\/g, '/');
-            parts.push(
-                `${relativePath}\u0000${fs.readFileSync(fullPath, 'utf8')}`
+            chunks.push(
+                Buffer.from(`${relativePath}\u0000`, 'utf8'),
+                fs.readFileSync(fullPath),
+                Buffer.from('\u0001', 'utf8')
             );
         });
     };
@@ -524,7 +589,7 @@ export function computeSkillDirHash(dirPath: string): string | null {
 
     return crypto
         .createHash('sha256')
-        .update(parts.join('\u0001'))
+        .update(Buffer.concat(chunks))
         .digest('hex');
 }
 
@@ -682,10 +747,13 @@ export function getInstalledSkillInfo(skillName: string): InstalledSkillInfo {
     const skillDir = path.join(skillsDir, localSkillName);
     const { cacheDir, repoPath } = resolveCachePaths(localSkillName, record);
     const installed = fs.existsSync(skillDir);
+    const currentHash =
+        installed && record?.contentHash ? computeSkillDirHash(skillDir) : null;
+    // 哈希不可计算（目录不可读等）时不误报本地修改
     const localModified =
-        installed && Boolean(record?.contentHash)
-            ? computeSkillDirHash(skillDir) !== record?.contentHash
-            : false;
+        Boolean(record?.contentHash) &&
+        currentHash !== null &&
+        currentHash !== record?.contentHash;
 
     return {
         skillName: normalizedSkillName,
@@ -705,7 +773,7 @@ export function getInstalledSkillInfo(skillName: string): InstalledSkillInfo {
 
 export function removeInstalledSkill(
     skillName: string,
-    options: { removeCache?: boolean } = {}
+    options: { removeCache?: boolean; force?: boolean } = {}
 ): RemoveInstalledSkillResult {
     const normalizedSkillName = normalizeCliSkillArgument(skillName);
     const localSkillName = resolveLocalSkillName(normalizedSkillName);
@@ -713,8 +781,21 @@ export function removeInstalledSkill(
 
     const state = readInstallState();
     const record = state.skills[localSkillName] || null;
-    const skillDir = path.join(getSkillsDirectory(), localSkillName);
+    // S1 纵深防御：卸载目标必须严格位于技能目录下一层
+    const skillDir = assertContainedChildPath(
+        getSkillsDirectory(),
+        localSkillName
+    );
     const { cacheDir, repoPath } = resolveCachePaths(localSkillName, record);
+    const managed = Boolean(record && recordMatchesCurrentSkillsDir(record));
+
+    // S2：无安装记录的手工技能目录默认拒删，需 --force 显式确认
+    if (fs.existsSync(skillDir) && !managed && options.force !== true) {
+        throw new GetSkillError(
+            'UNMANAGED_SKILL',
+            `技能目录 ${skillDir} 不由 getskill 管理（无安装记录），为避免误删手工放置的技能已拒绝卸载。确认删除请使用 --force，或手动删除该目录`
+        );
+    }
 
     let removedInstall = false;
     let removedCache = false;
@@ -735,8 +816,19 @@ export function removeInstalledSkill(
             !repoPath.startsWith(`${cacheDir}${path.sep}`) &&
             fs.existsSync(repoPath)
         ) {
-            fs.rmSync(repoPath, { recursive: true, force: true });
-            removedCache = true;
+            // S3：state 中的 repoPath 可能被篡改/迁移，只允许删除
+            // 缓存根目录或 getskill 家目录之内的路径
+            const insideManagedRoots =
+                isPathWithin(getSkillsCacheDirectory(), repoPath) ||
+                isPathWithin(getGetSkillHome(), repoPath);
+            if (insideManagedRoots) {
+                fs.rmSync(repoPath, { recursive: true, force: true });
+                removedCache = true;
+            } else {
+                logger.warn(
+                    `跳过删除受管目录之外的解压路径（可能指向手工目录）: ${repoPath}`
+                );
+            }
         }
     }
 
@@ -748,6 +840,7 @@ export function removeInstalledSkill(
         removedInstall,
         removedCache,
         skillDir,
-        repoPath: cacheDir
+        repoPath: cacheDir,
+        managed
     };
 }

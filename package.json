@@ -1,7 +1,7 @@
 {
     "name": "@workskills/getskill",
     "description": "A skill management CLI for any AI agent (Claude Code, OpenClaw, Codex, Cursor, or a custom skills directory) that searches, installs, and updates skill files from the getskill.work registry",
-    "version": "3.2.0",
+    "version": "3.2.1",
     "main": "dist/main.js",
     "types": "dist/main.d.ts",
     "bin": {

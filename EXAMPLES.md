@@ -153,10 +153,10 @@ done
 ```bash
 # 第 0 步: 一次 status 完成前置检查（门禁/目录/索引缓存/已装技能/失效记录/锁）
 $ getskill status --json
-{ "command": "status", "agent": "claude", "skills_dir": "~/.claude/skills",
+{ "command": "status", "cli_version": "3.2.1", "agent": "claude", "skills_dir": "~/.claude/skills",
   "explicit_target": true, "index": { "exists": true, "fetched_at": "…", "skill_count": 5459, "stale": false },
   "installed": { "count": 1, "skills": [ { "name": "pdf-toolkit", "version": "1.0.0", "managed": true, ... } ] },
-  "stale_records": [], "state_locked": false }
+  "stale_records": [], "state_locked": false, "lock_pid": null, "lock_stale": false }
 
 # 搜索无结果时，按分类紧凑浏览完整索引（不要直接读数 MB 的原始索引文件）
 $ getskill index --categories --json
@@ -180,9 +180,13 @@ $ getskill install pdf-toolkit --dry-run --json
 $ getskill install pdf-toolkit --json
 { "command": "install", "status": "installed", "skill": "pdf-toolkit", "version": "1.0.0",
   "up_to_date": false, "install_dir": "~/.claude/skills/pdf-toolkit", "files": [...], "agent": "claude",
-  "local_modified": false, "index": { ... },
+  "local_modified": false, "warnings": [], "index": { ... },
   "skill_md_path": "~/.claude/skills/pdf-toolkit/SKILL.md", "next_step": "阅读 …/SKILL.md 并按其说明使用技能；…",
   "reload_command": null, "reloaded": null }
+
+# warnings[] 是非致命警告（跳过符号链接/超大文件、包体积与索引声明不一致等），Agent 应检查
+# 索引缓存滞后、站点刚更新时，用 --refresh 强制刷新索引后再解析
+$ getskill install pdf-toolkit --refresh --json
 
 $ getskill install pdf-toolkit --json
 { "command": "install", "status": "skipped", "up_to_date": true, ... }
@@ -195,6 +199,21 @@ $ getskill uninstall pdf-toolkit --json
 
 $ getskill uninstall pdf-toolkit --json   # 再次卸载：不再误报 removed
 { "command": "uninstall", "status": "not_installed", "removed_install": false, "removed_cache": false, ... }
+
+# 无安装记录的手工技能目录默认拒删（UNMANAGED_SKILL），确认要删时加 --force
+$ getskill uninstall manual-skill --json
+{ "command": "uninstall", "skill": "manual-skill", "error": { "code": "UNMANAGED_SKILL", "message": "技能目录 … 不由 getskill 管理（无安装记录）…确认删除请使用 --force…" } }
+
+$ getskill uninstall manual-skill --dry-run --json   # 预演同样如实反映保护
+{ "command": "uninstall", "dry_run": true, "total": 1,
+  "results": [ { "skill": "manual-skill", "ok": false, "action": "blocked", "managed": false, "error": { "code": "UNMANAGED_SKILL", ... } } ] }
+
+$ getskill uninstall manual-skill --force --json
+{ "command": "uninstall", "status": "removed", "managed": false, "removed_install": true, ... }
+
+# 清理缓存前预演（只列出将删除的路径，不执行删除）
+$ getskill clean --dry-run --json
+{ "command": "clean", "dry_run": true, "would_remove": ["~/.getskill/cache"], "kept_index": false, "cache_dir": "~/.getskill/cache" }
 
 # 批量操作：逐项结果 + 计数，部分失败时退出码非零
 $ getskill install pdf-toolkit excel-helper --json
@@ -221,8 +240,8 @@ $ getskill inspect pdf-toolkit --json
 $ getskill search pdf --json --base-url http://127.0.0.1:9   # 站点不可用且无缓存
 { "command": "search", "keyword": "pdf", "error": { "code": "NETWORK_ERROR", "message": "搜索失败: …" } }
 
-$ getskill install no-such-skill --json
-{ "command": "install", "skill": "no-such-skill", "error": { "code": "SKILL_NOT_FOUND", "message": "技能不存在: no-such-skill，…" } }
+$ getskill install pdf-toolki --json   # 拼错技能名：附 did-you-mean 建议（本地索引离线计算）
+{ "command": "install", "skill": "pdf-toolki", "error": { "code": "SKILL_NOT_FOUND", "message": "技能不存在: pdf-toolki，…（是否想使用: pdf-toolkit？）", "suggestions": ["pdf-toolkit"] } }
 
 $ getskill serch pdf --json   # 拼错命令：不再打印 help 假装成功
 { "command": "serch", "error": { "code": "INVALID_ARGS", "message": "未知命令: serch（是否想执行 getskill search？）…" } }
@@ -381,7 +400,15 @@ A: 用 `getskill config set skills-dir <path>`、`getskill --skills-dir <path> .
 
 ### Q: 如何卸载技能？
 
-A: 使用 `getskill uninstall <技能名称>`，或直接删除当前技能目录（`getskill path` 可查看）下对应的子目录。
+A: 使用 `getskill uninstall <技能名称>`，或直接删除当前技能目录（`getskill path` 可查看）下对应的子目录。注意：没有 getskill 安装记录的手工技能目录默认拒删（`UNMANAGED_SKILL`），确认要删时加 `--force`。
+
+### Q: 安装时报“技能包地址跨域…默认拒绝下载”怎么办？
+
+A: 3.2.1 起技能包默认仅允许与索引源（`base-url`）同源下载。若你信任索引中指向的其他域名（如自建 CDN），设置环境变量 `GETSKILL_ALLOW_CROSS_ORIGIN=1` 后重试。
+
+### Q: 技能名可以用 `..` 或 `CON` 吗？
+
+A: 不可以。install/update/uninstall/inspect 会拒绝不安全名称（目录穿越、盘符/数据流字符、Windows 保留设备名、控制字符、结尾点/空格），报 `INVALID_ARGS`，防止误删技能根目录或写入非法路径。
 
 ### Q: 缓存目录可以删除吗？
 

@@ -30,7 +30,8 @@ import {
     getInstalledSkillInfo,
     listLocalSkillsDetailed,
     readInstallState,
-    resolveLocalSkillName
+    resolveLocalSkillName,
+    writeInstallState
 } from '../lib/state';
 import { compareVersions } from '../lib/version';
 import type { SkillIndexEntry } from '../lib/types';
@@ -49,7 +50,18 @@ function makeEntry(overrides: Partial<SkillIndexEntry> = {}): SkillIndexEntry {
     };
 }
 
-/** 构造最小 stored（method 0）zip，extractZip 不校验 CRC。 */
+function crc32(data: Buffer): number {
+    let crc = 0xffffffff;
+    for (const byte of data) {
+        crc ^= byte;
+        for (let bit = 0; bit < 8; bit += 1) {
+            crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+        }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** 构造最小 stored（method 0）zip，含真实 CRC（extractZip 会校验）。 */
 function makeStoredZip(files: Record<string, string>): Buffer {
     const locals: Buffer[] = [];
     const centrals: Buffer[] = [];
@@ -58,10 +70,12 @@ function makeStoredZip(files: Record<string, string>): Buffer {
     Object.entries(files).forEach(([name, content]) => {
         const nameBuf = Buffer.from(name, 'utf8');
         const data = Buffer.from(content, 'utf8');
+        const crc = crc32(data);
         const local = Buffer.alloc(30);
         local.writeUInt32LE(0x04034b50, 0);
         local.writeUInt16LE(20, 4);
         local.writeUInt16LE(0, 8); // method 0 = stored
+        local.writeUInt32LE(crc, 14);
         local.writeUInt32LE(data.length, 18);
         local.writeUInt32LE(data.length, 22);
         local.writeUInt16LE(nameBuf.length, 26);
@@ -72,6 +86,7 @@ function makeStoredZip(files: Record<string, string>): Buffer {
         central.writeUInt16LE(20, 4);
         central.writeUInt16LE(20, 6);
         central.writeUInt16LE(0, 10);
+        central.writeUInt32LE(crc, 16);
         central.writeUInt32LE(data.length, 20);
         central.writeUInt32LE(data.length, 24);
         central.writeUInt16LE(nameBuf.length, 28);
@@ -476,6 +491,46 @@ describe('agent contract behaviors (local server)', () => {
         expect(computeSkillDirHash(path.join(dir, 'missing'))).toBeNull();
         fs.rmSync(dir, { recursive: true, force: true });
     });
+
+    it('uninstall refuses unmanaged directories unless forced (S2)', async () => {
+        const home = useTempEnv();
+        const manualDir = path.join(home, 'skills', 'manual-skill');
+        fs.mkdirSync(manualDir, { recursive: true });
+        fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+        await expect(uninstallSkill('manual-skill')).rejects.toMatchObject({
+            code: 'UNMANAGED_SKILL'
+        });
+        expect(fs.existsSync(manualDir)).toBe(true);
+
+        const removed = await uninstallSkill('manual-skill', { force: true });
+        expect(removed.removedInstall).toBe(true);
+        expect(removed.managed).toBe(false);
+        expect(fs.existsSync(manualDir)).toBe(false);
+    });
+
+    it('install results carry a warnings array (N2)', async () => {
+        useTempEnv();
+        const result = await downloadSkill('pdf-extract');
+        expect(Array.isArray(result.warnings)).toBe(true);
+        const again = await downloadSkill('pdf-extract');
+        expect(again.upToDate).toBe(true);
+        expect(Array.isArray(again.warnings)).toBe(true);
+    });
+
+    it('non-semver local version no longer blocks updates (N1)', async () => {
+        useTempEnv();
+        await downloadSkill('pdf-extract');
+
+        const state = readInstallState();
+        state.skills['pdf-extract'].version = 'unknown';
+        writeInstallState(state);
+        clearSkillsIndexCache();
+
+        const updated = await updateSkill('pdf-extract');
+        expect(updated.upToDate).toBeFalsy();
+        expect(updated.version).toBe('1.0.0');
+    });
 });
 
 describe('cli json envelope (spawned process)', () => {
@@ -606,5 +661,102 @@ describe('cli json envelope (spawned process)', () => {
             false
         );
         expect(zipHits).toBe(0);
+    });
+
+    it('SKILL_NOT_FOUND carries did-you-mean suggestions', async () => {
+        const home = useTempEnv();
+        const { stdout, code } = await runCli(
+            ['install', 'pdf-extrac', '--json'],
+            home
+        );
+        expect(code).toBe(1);
+        const payload = JSON.parse(stdout);
+        expect(payload.error.code).toBe('SKILL_NOT_FOUND');
+        expect(payload.error.suggestions).toContain('pdf-extract');
+    });
+
+    it('uninstall --dry-run blocks unmanaged dirs and --force removes them', async () => {
+        const home = useTempEnv();
+        const manualDir = path.join(home, 'skills', 'manual-skill');
+        fs.mkdirSync(manualDir, { recursive: true });
+
+        const blocked = await runCli(
+            ['uninstall', 'manual-skill', '--dry-run', '--json'],
+            home
+        );
+        expect(blocked.code).toBe(1);
+        const blockedPayload = JSON.parse(blocked.stdout);
+        expect(blockedPayload.results[0]).toMatchObject({
+            ok: false,
+            action: 'blocked',
+            managed: false
+        });
+        expect(blockedPayload.results[0].error.code).toBe('UNMANAGED_SKILL');
+        expect(fs.existsSync(manualDir)).toBe(true);
+
+        const forced = await runCli(
+            ['uninstall', 'manual-skill', '--force', '--json'],
+            home
+        );
+        expect(forced.code).toBe(0);
+        const forcedPayload = JSON.parse(forced.stdout);
+        expect(forcedPayload.status).toBe('removed');
+        expect(forcedPayload.managed).toBe(false);
+        expect(fs.existsSync(manualDir)).toBe(false);
+    });
+
+    it('status exposes cli_version and lock details', async () => {
+        const home = useTempEnv();
+        const { stdout, code } = await runCli(['status', '--json'], home);
+        expect(code).toBe(0);
+        const payload = JSON.parse(stdout);
+        expect(payload.cli_version).toMatch(/^\d+\.\d+\.\d+/);
+        expect(payload.state_locked).toBe(false);
+        expect(payload.lock_pid).toBeNull();
+        expect(payload.lock_stale).toBe(false);
+    });
+
+    it('clean --dry-run lists paths without deleting', async () => {
+        const home = useTempEnv();
+        const cacheDir = path.join(home, 'cache');
+        fs.mkdirSync(cacheDir, { recursive: true });
+        fs.writeFileSync(path.join(cacheDir, 'leftover.bin'), 'x');
+
+        const { stdout, code } = await runCli(
+            ['clean', '--dry-run', '--json'],
+            home
+        );
+        expect(code).toBe(0);
+        const payload = JSON.parse(stdout);
+        expect(payload.dry_run).toBe(true);
+        expect(payload.would_remove).toContain(cacheDir);
+        expect(fs.existsSync(path.join(cacheDir, 'leftover.bin'))).toBe(true);
+    });
+
+    it('install envelope includes warnings and index meta', async () => {
+        const home = useTempEnv();
+        const { stdout, code } = await runCli(
+            ['install', 'pdf-extract', '--json'],
+            home
+        );
+        expect(code).toBe(0);
+        const payload = JSON.parse(stdout);
+        expect(payload.status).toBe('installed');
+        expect(Array.isArray(payload.warnings)).toBe(true);
+        // 首次下载为 remote；安装流程内二次查找命中刚写入的缓存时为 cache
+        expect(['remote', 'cache']).toContain(payload.index.source);
+        expect(payload.index.stale).toBe(false);
+    });
+
+    it('help --json exposes exit_codes and the new error codes', async () => {
+        const home = useTempEnv();
+        const { stdout, code } = await runCli(['--help', '--json'], home);
+        expect(code).toBe(0);
+        const payload = JSON.parse(stdout);
+        expect(payload.exit_codes['1']).toBeTruthy();
+        expect(payload.error_codes).toContain('UNMANAGED_SKILL');
+        expect(payload.error_codes).toContain('EXTRACT_ERROR');
+        expect(payload.error_codes).toContain('PACKAGE_INVALID');
+        expect(payload.env_vars).toContain('GETSKILL_ALLOW_CROSS_ORIGIN');
     });
 });

@@ -36,12 +36,14 @@ import {
     findSkillIndexEntry,
     getSkillsIndexCacheFilePath,
     getSkillsIndexMeta,
+    normalizeSkillIndexKey,
     peekSkillsIndexCache,
-    repositoryHasSkillFile,
+    readCachedIndexEntries,
     searchSkills,
     searchSkillsPage
 } from './lib/network';
 import {
+    STATE_LOCK_STALE_MS,
     copySkillFiles,
     getInstalledSkillInfo,
     listLocalSkills,
@@ -97,6 +99,9 @@ export function printHelp(): void {
     console.log(
         '  getskill install <技能名称> --force - 强制重装（同版本已安装时默认跳过下载）'
     );
+    console.log(
+        '  getskill install/update <技能名称> --refresh - 强制刷新技能索引缓存后再解析'
+    );
     console.log('  getskill update <技能名称>    - 检查在线版本并更新技能');
     console.log(
         '  getskill update <技能名称> --version <tag> - 更新到指定版本'
@@ -109,6 +114,9 @@ export function printHelp(): void {
         '  getskill update --all --dry-run - 预演批量更新（只读，不写入）'
     );
     console.log('  getskill uninstall <技能名称> - 卸载本地技能');
+    console.log(
+        '  getskill uninstall <技能名称> --force - 连同无安装记录的手工技能目录一起删除（默认拒删）'
+    );
     console.log(
         '  getskill install/update/uninstall <名称1> <名称2> ... - 批量操作（逐项结果+计数）'
     );
@@ -137,6 +145,9 @@ export function printHelp(): void {
     console.log(
         '  getskill clean --keep-index   - 清理缓存但保留索引缓存 skills-index.json'
     );
+    console.log(
+        '  getskill clean --dry-run      - 预演清理（列出将删除的路径，不执行删除）'
+    );
     console.log('');
     console.log(
         '注意: install/update 需要显式指定 agent 或 skills-dir（配置/参数/环境变量）；'
@@ -157,16 +168,22 @@ export function printHelp(): void {
         '      所有命令均支持 --json（过程日志走 stderr，stdout 为纯 JSON）；--help --json 输出机器可读命令表。'
     );
     console.log(
-        '      出错时 --json 输出 { command, skill?, error: { code, message } } 并以非零码退出'
+        '      出错时 --json 输出 { command, skill?, error: { code, message, suggestions? } } 并以非零码退出'
     );
     console.log(
-        '      （NETWORK_ERROR / SKILL_NOT_FOUND / VERSION_NOT_AVAILABLE / TARGET_NOT_CONFIGURED / STATE_LOCKED / INVALID_ARGS / AMBIGUOUS_SKILL）。'
+        '      （NETWORK_ERROR / SKILL_NOT_FOUND / VERSION_NOT_AVAILABLE / TARGET_NOT_CONFIGURED / STATE_LOCKED / INVALID_ARGS / AMBIGUOUS_SKILL / EXTRACT_ERROR / PACKAGE_INVALID / UNMANAGED_SKILL）。'
+    );
+    console.log(
+        '      SKILL_NOT_FOUND 附带 suggestions（本地索引中相近技能名）；install/update 信封含 warnings[]（跳过符号链接/超大文件等非致命警告）。'
     );
     console.log(
         '      未知命令/未知选项/非法数值一律报 INVALID_ARGS；批量操作部分失败时也以非零码退出。'
     );
     console.log(
-        '      版本比较采用 semver：本地版本不低于站点版本时 install/update 跳过，不会静默降级。'
+        '      版本比较采用 semver：本地版本不低于站点版本时 install/update 跳过，不会静默降级；非 semver 版本（如 unknown）视为低于任何正式版本。'
+    );
+    console.log(
+        '      安全边界: 技能包默认仅允许与索引同源下载（GETSKILL_ALLOW_CROSS_ORIGIN=1 放行）；拒绝 HTTPS→HTTP 降级重定向；zip 解压有单文件 20MB/总量 200MB 限额并校验 CRC、拒绝符号链接。'
     );
     console.log(
         '      install/update 信封含 next_step/skill_md_path/reload_command/reloaded/local_modified/index 字段。'
@@ -191,6 +208,9 @@ export function printHelp(): void {
     console.log('  GETSKILL_AGENT, GETSKILL_SKILLS_DIR, GETSKILL_CACHE_DIR');
     console.log(
         '  GETSKILL_BASE_URL, GETSKILL_HOME, GETSKILL_RESTART_CMD, GETSKILL_LOG_LEVEL'
+    );
+    console.log(
+        '  GETSKILL_ALLOW_CROSS_ORIGIN=1 允许跨域技能包下载；GETSKILL_STATE_LOCK_TIMEOUT_MS 状态锁等待超时；GETSKILL_RESTART_TIMEOUT_MS 重载命令超时'
     );
     console.log('');
     console.log('示例:');
@@ -234,19 +254,19 @@ function buildHelpPayload(): Record<string, unknown> {
             },
             {
                 name: 'install',
-                usage: 'getskill install <技能名称...> [--json] [--version <tag>] [--force] [--dry-run]',
+                usage: 'getskill install <技能名称...> [--json] [--version <tag>] [--force] [--refresh] [--dry-run]',
                 description: '安装技能（支持多个名称批量；别名 get/download）'
             },
             {
                 name: 'update',
-                usage: 'getskill update <技能名称...> | --all [--prune] [--json] [--dry-run]',
+                usage: 'getskill update <技能名称...> [--version <tag>] [--refresh] | --all [--prune] [--json] [--dry-run]',
                 description: '更新技能；--all 批量更新，失败时非零退出'
             },
             {
                 name: 'uninstall',
-                usage: 'getskill uninstall <技能名称...> [--keep-cache] [--json] [--dry-run]',
+                usage: 'getskill uninstall <技能名称...> [--keep-cache] [--force] [--json] [--dry-run]',
                 description:
-                    '卸载技能（支持批量；未安装时 status=not_installed）'
+                    '卸载技能（支持批量；未安装时 status=not_installed；无安装记录的手工目录默认拒删，需 --force）'
             },
             {
                 name: 'list',
@@ -281,8 +301,9 @@ function buildHelpPayload(): Record<string, unknown> {
             },
             {
                 name: 'clean',
-                usage: 'getskill clean [--keep-index] [--json]',
-                description: '清理下载缓存（默认含索引缓存，--keep-index 保留）'
+                usage: 'getskill clean [--keep-index] [--dry-run] [--json]',
+                description:
+                    '清理下载缓存（默认含索引缓存，--keep-index 保留；--dry-run 仅列出将删除的路径）'
             },
             {
                 name: 'version',
@@ -310,8 +331,15 @@ function buildHelpPayload(): Record<string, unknown> {
             'STATE_LOCKED',
             'INVALID_ARGS',
             'AMBIGUOUS_SKILL',
+            'EXTRACT_ERROR',
+            'PACKAGE_INVALID',
+            'UNMANAGED_SKILL',
             'UNKNOWN_ERROR'
         ],
+        exit_codes: {
+            '0': '成功（含 up_to_date/skipped/not_installed 等无需操作的情形）',
+            '1': '命令失败或批量操作存在失败项（--json 时 stdout 仍输出结果/错误信封）'
+        },
         env_vars: [
             'GETSKILL_AGENT',
             'GETSKILL_SKILLS_DIR',
@@ -320,10 +348,13 @@ function buildHelpPayload(): Record<string, unknown> {
             'GETSKILL_HOME',
             'GETSKILL_STATE_FILE',
             'GETSKILL_RESTART_CMD',
-            'GETSKILL_LOG_LEVEL'
+            'GETSKILL_LOG_LEVEL',
+            'GETSKILL_ALLOW_CROSS_ORIGIN',
+            'GETSKILL_STATE_LOCK_TIMEOUT_MS',
+            'GETSKILL_RESTART_TIMEOUT_MS'
         ],
         json_contract:
-            '所有命令支持 --json；stdout 为纯 JSON，过程日志走 stderr；出错时输出 { command, skill?, error: { code, message } } 并以非零码退出'
+            '所有命令支持 --json；stdout 为纯 JSON，过程日志走 stderr；出错时输出 { command, skill?, error: { code, message, suggestions? } } 并以非零码退出；install/update 信封含 warnings[] 非致命警告；信封只增字段不删字段'
     };
 }
 
@@ -421,6 +452,66 @@ function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/** SKILL_NOT_FOUND 的离线 did-you-mean：本地索引缓存中编辑距离 ≤2 的前 3 个。 */
+function suggestSkillNames(skillName: string): string[] {
+    const entries = readCachedIndexEntries();
+    if (!entries || entries.length === 0) {
+        return [];
+    }
+    const key = normalizeSkillIndexKey(skillName);
+    if (!key) {
+        return [];
+    }
+    return entries
+        .map((entry) => ({
+            id: entry.id,
+            score: editDistance(key, normalizeSkillIndexKey(entry.id))
+        }))
+        .filter((item) => item.score <= 2)
+        .sort((a, b) => a.score - b.score || a.id.localeCompare(b.id))
+        .slice(0, 3)
+        .map((item) => item.id);
+}
+
+/** 统一错误载荷：SKILL_NOT_FOUND 附带相近技能名建议（suggestions）。 */
+function errorPayload(
+    error: unknown,
+    skillName?: string
+): Record<string, unknown> {
+    const code = getErrorCode(error);
+    const payload: Record<string, unknown> = {
+        code,
+        message: errorMessage(error)
+    };
+    const suggestions =
+        error instanceof GetSkillError && error.suggestions?.length
+            ? error.suggestions
+            : code === 'SKILL_NOT_FOUND' && skillName
+              ? suggestSkillNames(skillName)
+              : [];
+    if (suggestions.length > 0) {
+        payload.suggestions = suggestions;
+        payload.message = `${payload.message}（是否想使用: ${suggestions.join(', ')}？）`;
+    }
+    return payload;
+}
+
+/** --version 收到布尔字面量（true/false 等）时报 INVALID_ARGS 而非当成版本号。 */
+function assertVersionNotBooleanLiteral(
+    options: Record<string, string | boolean>
+): void {
+    const value = options.version;
+    if (
+        typeof value === 'string' &&
+        /^(true|false|yes|no|on|off)$/i.test(value.trim())
+    ) {
+        throw new GetSkillError(
+            'INVALID_ARGS',
+            `--version 需要版本号（收到布尔字面量: ${value}）；查看 CLI 版本请用 getskill --version`
+        );
+    }
+}
+
 /** --json 时把过程日志重定向到 stderr，否则原样执行。 */
 async function runCaptured<T>(json: boolean, fn: () => Promise<T>): Promise<T> {
     return json ? captureStdout(fn) : fn();
@@ -463,11 +554,12 @@ function printJson(payload: Record<string, unknown>): void {
     console.log(JSON.stringify(payload, null, 2));
 }
 
-/** --brief / index 紧凑输出用的简介截断。 */
+/** --brief / index 紧凑输出用的简介截断（按 Unicode 码点，不截断代理对）。 */
 function truncateText(text: string, maxLength: number): string {
     const normalized = (text || '').replace(/\s+/g, ' ').trim();
-    return normalized.length > maxLength
-        ? `${normalized.slice(0, maxLength)}…`
+    const chars = Array.from(normalized);
+    return chars.length > maxLength
+        ? `${chars.slice(0, maxLength).join('')}…`
         : normalized;
 }
 
@@ -1055,6 +1147,7 @@ export async function cli(): Promise<void> {
                         '--version 需要版本号（如 --version 1.0.0 或 -V 1.0.0）；查看 CLI 版本请用 getskill --version'
                     );
                 }
+                assertVersionNotBooleanLiteral(options);
                 const requestedVersion =
                     typeof options.version === 'string'
                         ? options.version
@@ -1069,7 +1162,8 @@ export async function cli(): Promise<void> {
 
                 const downloadOptions = {
                     version: requestedVersion,
-                    force: options.force === true
+                    force: options.force === true,
+                    refresh: options.refresh === true
                 };
 
                 if (options['dry-run'] === true) {
@@ -1083,10 +1177,7 @@ export async function cli(): Promise<void> {
                             plans.push({
                                 skill: name,
                                 ok: false,
-                                error: {
-                                    code: getErrorCode(error),
-                                    message: errorMessage(error)
-                                }
+                                error: errorPayload(error, name)
                             });
                         }
                     }
@@ -1128,16 +1219,14 @@ export async function cli(): Promise<void> {
                                 version: item.version ?? null,
                                 install_dir: item.files[0] ?? null,
                                 local_modified: Boolean(item.localModified),
+                                warnings: item.warnings ?? [],
                                 ...activationFields(item, itemReload)
                             });
                         } catch (error) {
                             results.push({
                                 skill: name,
                                 ok: false,
-                                error: {
-                                    code: getErrorCode(error),
-                                    message: errorMessage(error)
-                                }
+                                error: errorPayload(error, name)
                             });
                         }
                     }
@@ -1151,6 +1240,7 @@ export async function cli(): Promise<void> {
                             succeeded: results.length - failed,
                             failed,
                             agent: getAgentName(),
+                            index: getSkillsIndexMeta(),
                             results
                         });
                     } else {
@@ -1190,6 +1280,7 @@ export async function cli(): Promise<void> {
                         cache_dir: result.repoPath,
                         agent: getAgentName(),
                         local_modified: Boolean(result.localModified),
+                        warnings: result.warnings ?? [],
                         index: getSkillsIndexMeta(),
                         ...activationFields(result, reload)
                     });
@@ -1232,6 +1323,7 @@ export async function cli(): Promise<void> {
                         '--version 需要版本号（如 --version 1.0.0 或 -V 1.0.0）；查看 CLI 版本请用 getskill --version'
                     );
                 }
+                assertVersionNotBooleanLiteral(options);
                 if (options.all) {
                     if (restArgs.length > 0) {
                         throw new GetSkillError(
@@ -1275,12 +1367,24 @@ export async function cli(): Promise<void> {
                             try {
                                 plans.push(await planSkillAction(name));
                             } catch (error) {
-                                plans.push({
-                                    skill: name,
-                                    ok: true,
-                                    action: 'stale',
-                                    note: errorMessage(error)
-                                });
+                                // 与真实 update --all 对齐：仅 SKILL_NOT_FOUND 视为 stale，
+                                // 其他错误（网络/版本等）按失败预演并以非零码退出
+                                const code = getErrorCode(error);
+                                if (code === 'SKILL_NOT_FOUND') {
+                                    plans.push({
+                                        skill: name,
+                                        ok: true,
+                                        action: 'stale',
+                                        note: errorMessage(error)
+                                    });
+                                } else {
+                                    plans.push({
+                                        skill: name,
+                                        ok: false,
+                                        action: 'unknown',
+                                        error: errorPayload(error, name)
+                                    });
+                                }
                             }
                         }
                         if (json) {
@@ -1289,10 +1393,14 @@ export async function cli(): Promise<void> {
                                 all: true,
                                 dry_run: true,
                                 total: plans.length,
+                                index: getSkillsIndexMeta(),
                                 results: plans
                             });
                         } else {
                             printPlans('update --all', plans);
+                        }
+                        if (plans.some((plan) => plan.ok === false)) {
+                            process.exitCode = 1;
                         }
                         break;
                     }
@@ -1382,7 +1490,10 @@ export async function cli(): Promise<void> {
                     );
                 }
                 errorSkill = restArgs[0];
-                const updateOptions = { version: requestedVersion };
+                const updateOptions = {
+                    version: requestedVersion,
+                    refresh: options.refresh === true
+                };
 
                 if (options['dry-run'] === true) {
                     const plans: Record<string, unknown>[] = [];
@@ -1395,10 +1506,7 @@ export async function cli(): Promise<void> {
                             plans.push({
                                 skill: name,
                                 ok: false,
-                                error: {
-                                    code: getErrorCode(error),
-                                    message: errorMessage(error)
-                                }
+                                error: errorPayload(error, name)
                             });
                         }
                     }
@@ -1440,16 +1548,14 @@ export async function cli(): Promise<void> {
                                 version: item.version ?? null,
                                 install_dir: item.files[0] ?? null,
                                 local_modified: Boolean(item.localModified),
+                                warnings: item.warnings ?? [],
                                 ...activationFields(item, itemReload)
                             });
                         } catch (error) {
                             results.push({
                                 skill: name,
                                 ok: false,
-                                error: {
-                                    code: getErrorCode(error),
-                                    message: errorMessage(error)
-                                }
+                                error: errorPayload(error, name)
                             });
                         }
                     }
@@ -1463,6 +1569,7 @@ export async function cli(): Promise<void> {
                             succeeded: results.length - failed,
                             failed,
                             agent: getAgentName(),
+                            index: getSkillsIndexMeta(),
                             results
                         });
                     } else {
@@ -1502,6 +1609,7 @@ export async function cli(): Promise<void> {
                         cache_dir: result.repoPath,
                         agent: getAgentName(),
                         local_modified: Boolean(result.localModified),
+                        warnings: result.warnings ?? [],
                         index: getSkillsIndexMeta(),
                         ...activationFields(result, reload)
                     });
@@ -1540,25 +1648,56 @@ export async function cli(): Promise<void> {
                 }
                 errorSkill = restArgs[0];
                 const uninstallOptions = {
-                    removeCache: options['keep-cache'] !== true
+                    removeCache: options['keep-cache'] !== true,
+                    force: options.force === true
                 };
 
                 if (options['dry-run'] === true) {
                     const plans = restArgs.map((name) => {
-                        const info = getInstalledSkillInfo(name);
-                        return {
-                            skill: info.localSkillName,
-                            ok: true,
-                            action:
-                                info.installed || info.cached
-                                    ? 'remove'
-                                    : 'none',
-                            removed_install: info.installed,
-                            removed_cache:
-                                info.cached && uninstallOptions.removeCache,
-                            skill_dir: info.skillDir,
-                            cache_dir: info.cacheDir
-                        };
+                        try {
+                            const info = getInstalledSkillInfo(name);
+                            const managed = Boolean(
+                                info.state &&
+                                recordMatchesCurrentSkillsDir(info.state)
+                            );
+                            // 与真实卸载对齐：未管理目录默认拒删（UNMANAGED_SKILL）
+                            const blocked =
+                                info.installed &&
+                                !managed &&
+                                uninstallOptions.force !== true;
+                            return {
+                                skill: info.localSkillName,
+                                ok: !blocked,
+                                action: blocked
+                                    ? 'blocked'
+                                    : info.installed || info.cached
+                                      ? 'remove'
+                                      : 'none',
+                                managed,
+                                local_modified: Boolean(info.localModified),
+                                removed_install: info.installed && !blocked,
+                                removed_cache:
+                                    !blocked &&
+                                    info.cached &&
+                                    uninstallOptions.removeCache,
+                                skill_dir: info.skillDir,
+                                cache_dir: info.cacheDir,
+                                ...(blocked
+                                    ? {
+                                          error: {
+                                              code: 'UNMANAGED_SKILL',
+                                              message: `技能目录 ${info.skillDir} 不由 getskill 管理（无安装记录），需 --force 才会删除`
+                                          }
+                                      }
+                                    : {})
+                            };
+                        } catch (error) {
+                            return {
+                                skill: name,
+                                ok: false,
+                                error: errorPayload(error, name)
+                            };
+                        }
                     });
                     if (json) {
                         printJson({
@@ -1569,6 +1708,9 @@ export async function cli(): Promise<void> {
                         });
                     } else {
                         printPlans('uninstall', plans);
+                    }
+                    if (plans.some((plan) => plan.ok === false)) {
+                        process.exitCode = 1;
                     }
                     break;
                 }
@@ -1588,6 +1730,7 @@ export async function cli(): Promise<void> {
                                     item.removedInstall || item.removedCache
                                         ? 'removed'
                                         : 'not_installed',
+                                managed: item.managed,
                                 removed_install: item.removedInstall,
                                 removed_cache: item.removedCache
                             });
@@ -1595,10 +1738,7 @@ export async function cli(): Promise<void> {
                             results.push({
                                 skill: name,
                                 ok: false,
-                                error: {
-                                    code: getErrorCode(error),
-                                    message: errorMessage(error)
-                                }
+                                error: errorPayload(error, name)
                             });
                         }
                     }
@@ -1611,6 +1751,7 @@ export async function cli(): Promise<void> {
                             total: results.length,
                             succeeded: results.length - failed,
                             failed,
+                            agent: getAgentName(),
                             results
                         });
                     } else {
@@ -1641,6 +1782,7 @@ export async function cli(): Promise<void> {
                         command: 'uninstall',
                         status: removed ? 'removed' : 'not_installed',
                         skill: result.localSkillName,
+                        managed: result.managed,
                         removed_install: result.removedInstall,
                         removed_cache: result.removedCache,
                         skill_dir: result.skillDir,
@@ -1760,7 +1902,23 @@ export async function cli(): Promise<void> {
                         (record) =>
                             record.inputSkillName || record.localSkillName
                     );
-                const stateLocked = fs.existsSync(`${getStateFilePath()}.lock`);
+                const lockPath = `${getStateFilePath()}.lock`;
+                const stateLocked = fs.existsSync(lockPath);
+                let lockPid: number | null = null;
+                let lockStale = false;
+                if (stateLocked) {
+                    try {
+                        const lockStat = fs.statSync(lockPath);
+                        lockStale =
+                            Date.now() - lockStat.mtimeMs > STATE_LOCK_STALE_MS;
+                        const pid = Number(
+                            fs.readFileSync(lockPath, 'utf8').trim()
+                        );
+                        lockPid = Number.isInteger(pid) && pid > 0 ? pid : null;
+                    } catch {
+                        // 锁文件不可读时仅报告占用状态
+                    }
+                }
                 const indexStatus = cacheInfo
                     ? { exists: true, ...cacheInfo }
                     : {
@@ -1773,6 +1931,7 @@ export async function cli(): Promise<void> {
                 if (json) {
                     printJson({
                         command: 'status',
+                        cli_version: getCliVersion(),
                         agent: config.agent,
                         agent_label: config.agentLabel,
                         skills_dir: config.skillsDir,
@@ -1785,7 +1944,9 @@ export async function cli(): Promise<void> {
                         index: indexStatus,
                         installed: { count: skills.length, skills },
                         stale_records: staleRecords,
-                        state_locked: stateLocked
+                        state_locked: stateLocked,
+                        lock_pid: lockPid,
+                        lock_stale: lockStale
                     });
                     break;
                 }
@@ -1811,7 +1972,9 @@ export async function cli(): Promise<void> {
                         `失效记录（目录已被手动删除）: ${staleRecords.join(', ')}`
                     );
                 }
-                console.log(`状态锁: ${stateLocked ? '被占用' : '空闲'}`);
+                console.log(
+                    `状态锁: ${stateLocked ? `被占用${lockPid ? ` (pid ${lockPid})` : ''}${lockStale ? '（疑似残留，超过 30 秒将自动回收）' : ''}` : '空闲'}`
+                );
                 break;
             }
 
@@ -2068,6 +2231,47 @@ export async function cli(): Promise<void> {
                 const keepIndex = options['keep-index'] === true;
                 const removed: string[] = [];
 
+                if (options['dry-run'] === true) {
+                    const wouldRemove: string[] = [];
+                    if (fs.existsSync(cacheDir)) {
+                        if (keepIndex) {
+                            fs.readdirSync(cacheDir).forEach((entryName) => {
+                                if (entryName !== 'skills-index.json') {
+                                    wouldRemove.push(
+                                        path.join(cacheDir, entryName)
+                                    );
+                                }
+                            });
+                        } else {
+                            wouldRemove.push(cacheDir);
+                        }
+                    }
+                    getLegacyCacheDirectories().forEach((legacyDir) => {
+                        if (fs.existsSync(legacyDir)) {
+                            wouldRemove.push(legacyDir);
+                        }
+                    });
+                    if (json) {
+                        printJson({
+                            command: 'clean',
+                            dry_run: true,
+                            would_remove: wouldRemove,
+                            kept_index: keepIndex,
+                            cache_dir: cacheDir
+                        });
+                    } else {
+                        console.log('[dry-run] clean 预演（未执行任何删除）:');
+                        if (wouldRemove.length === 0) {
+                            console.log('  （无可清理的缓存）');
+                        } else {
+                            wouldRemove.forEach((dir) =>
+                                console.log(`  - ${dir}`)
+                            );
+                        }
+                    }
+                    break;
+                }
+
                 if (fs.existsSync(cacheDir)) {
                     if (keepIndex) {
                         // 保留索引缓存，只清理技能包缓存
@@ -2140,7 +2344,7 @@ export async function cli(): Promise<void> {
         if (jsonRequested) {
             const payload: Record<string, unknown> = {
                 command: command ?? null,
-                error: { code: getErrorCode(error), message }
+                error: errorPayload(error, errorSkill ?? undefined)
             };
             if (errorSkill) {
                 payload.skill = errorSkill;
@@ -2181,7 +2385,6 @@ export {
     getBaseUrl,
     cloneOrUpdateRepo,
     copySkillFiles,
-    repositoryHasSkillFile,
     fetchSkillMarkdown,
     fetchSkillsIndex
 };

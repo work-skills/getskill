@@ -1,10 +1,16 @@
-import { getBaseUrl } from '../lib/config';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
+import { getBaseUrl, refreshConfig } from '../lib/config';
 import {
+    assertPackageUrlAllowed,
     filterIndexByKeyword,
     getSkillPackageUrl,
     getSkillsIndexUrl,
     mapIndexEntryToSearchSkill,
-    normalizeSkillIndexKey
+    normalizeSkillIndexKey,
+    readCachedIndexEntries
 } from '../lib/network';
 import type { SkillIndexEntry } from '../lib/types';
 
@@ -87,5 +93,75 @@ describe('static skills index helpers', () => {
         });
         expect(skill.download_url).toBe(skill.git_url);
         expect(skill.clone_url).toBe(skill.download_url);
+    });
+});
+
+describe('package url policy (H6)', () => {
+    const originalBaseUrl = process.env.GETSKILL_BASE_URL;
+    const originalAllow = process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+
+    beforeEach(() => {
+        process.env.GETSKILL_BASE_URL = 'https://index.example.com';
+        delete process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+        refreshConfig();
+    });
+
+    afterEach(() => {
+        if (originalBaseUrl === undefined) {
+            delete process.env.GETSKILL_BASE_URL;
+        } else {
+            process.env.GETSKILL_BASE_URL = originalBaseUrl;
+        }
+        if (originalAllow === undefined) {
+            delete process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+        } else {
+            process.env.GETSKILL_ALLOW_CROSS_ORIGIN = originalAllow;
+        }
+        refreshConfig();
+    });
+
+    it('allows same-origin package urls', () => {
+        expect(() =>
+            assertPackageUrlAllowed('https://index.example.com/skills/a.zip')
+        ).not.toThrow();
+    });
+
+    it('rejects cross-origin package urls by default', () => {
+        expect(() =>
+            assertPackageUrlAllowed('https://evil.example.org/a.zip')
+        ).toThrow(/跨域/);
+    });
+
+    it('allows cross-origin when GETSKILL_ALLOW_CROSS_ORIGIN=1', () => {
+        process.env.GETSKILL_ALLOW_CROSS_ORIGIN = '1';
+        expect(() =>
+            assertPackageUrlAllowed('https://cdn.example.org/a.zip')
+        ).not.toThrow();
+    });
+
+    it('rejects invalid package urls', () => {
+        expect(() => assertPackageUrlAllowed('not a url')).toThrow(/无效/);
+    });
+});
+
+describe('readCachedIndexEntries', () => {
+    it('returns null when no index cache exists', () => {
+        const home = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'getskill-index-peek-')
+        );
+        const originalHome = process.env.GETSKILL_HOME;
+        process.env.GETSKILL_HOME = home;
+        refreshConfig();
+        try {
+            expect(readCachedIndexEntries()).toBeNull();
+        } finally {
+            if (originalHome === undefined) {
+                delete process.env.GETSKILL_HOME;
+            } else {
+                process.env.GETSKILL_HOME = originalHome;
+            }
+            refreshConfig();
+            fs.rmSync(home, { recursive: true, force: true });
+        }
     });
 });

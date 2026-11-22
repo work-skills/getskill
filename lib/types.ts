@@ -135,12 +135,16 @@ export interface DownloadResult {
     upToDate?: boolean;
     /** 覆盖前检测到本地内容与安装时记录不一致（本地改动将被覆盖）。 */
     localModified?: boolean;
+    /** 安装过程中的非致命警告（跳过符号链接/超大文件、体积不一致等）。 */
+    warnings?: string[];
 }
 
 export interface DownloadOptions {
     version?: string;
     /** 同版本已安装时仍强制重新下载安装。 */
     force?: boolean;
+    /** 强制刷新技能索引缓存后再解析技能（install --refresh）。 */
+    refresh?: boolean;
 }
 
 export interface UpdateAllOptions {
@@ -187,4 +191,6 @@ export interface RemoveInstalledSkillResult {
     removedCache: boolean;
     skillDir: string;
     repoPath: string;
+    /** 目录是否由 getskill 管理（存在当前技能目录的安装记录）。 */
+    managed: boolean;
 }

@@ -10,6 +10,7 @@ import {
 import logger from './logger';
 import { GetSkillError, getErrorCode } from './errors';
 import {
+    assertPackageUrlAllowed,
     downloadFile,
     fetchSkillsIndex,
     findSkillIndexEntry,
@@ -45,6 +46,7 @@ export interface FetchSkillToCacheResult {
     repoPath: string;
     cachePath: string;
     entry: SkillIndexEntry;
+    warnings: string[];
 }
 
 function assertVersionAvailable(
@@ -68,7 +70,9 @@ export async function fetchSkillToCache(
     options: DownloadOptions = {}
 ): Promise<FetchSkillToCacheResult> {
     const normalizedSkillName = normalizeCliSkillArgument(skillName);
-    const entry = await findSkillIndexEntry(normalizedSkillName);
+    const entry = await findSkillIndexEntry(normalizedSkillName, {
+        forceRefresh: options.refresh === true
+    });
     if (!entry) {
         throw new GetSkillError(
             'SKILL_NOT_FOUND',
@@ -85,24 +89,59 @@ export async function fetchSkillToCache(
     // 缓存目录与安装目录使用同一规范名（entry.id 解析出的本地名）
     const localSkillName = resolveLocalSkillName(entry.id);
     const cachePath = path.join(cacheDir, localSkillName);
-    const zipPath = path.join(cacheDir, `${localSkillName}.zip`);
+    // H4：唯一临时 zip/解压目录名，同技能并发安装不再互踩
+    const uniqueSuffix = `${process.pid}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+    const zipPath = path.join(
+        cacheDir,
+        `${localSkillName}.zip.tmp-${uniqueSuffix}`
+    );
+    const tempExtractDir = path.join(
+        cacheDir,
+        `${localSkillName}.tmp-${uniqueSuffix}`
+    );
     const downloadUrl = getSkillPackageUrl(entry);
+    assertPackageUrlAllowed(downloadUrl);
 
+    const warnings: string[] = [];
     logger.info(`下载技能包: ${downloadUrl}`);
     const receivedBytes = await downloadFile(downloadUrl, zipPath);
+    if (
+        typeof entry.size === 'number' &&
+        entry.size > 0 &&
+        receivedBytes !== entry.size
+    ) {
+        const message = `技能包体积与索引声明不一致（声明 ${entry.size} bytes，实际 ${receivedBytes} bytes）: ${entry.id}`;
+        logger.warn(message);
+        warnings.push(message);
+    }
     logger.info(`下载完成 (${receivedBytes} bytes)，正在解压...`);
 
+    try {
+        ensureDirectoryExists(tempExtractDir);
+        extractZip(zipPath, tempExtractDir);
+    } catch (error) {
+        fs.rmSync(tempExtractDir, { recursive: true, force: true });
+        throw error;
+    } finally {
+        fs.rmSync(zipPath, { force: true });
+    }
+
+    // 解压成功后再替换规范缓存目录；并发替换失败时重试一次
     if (fs.existsSync(cachePath)) {
         fs.rmSync(cachePath, { recursive: true, force: true });
     }
-    ensureDirectoryExists(cachePath);
-
-    extractZip(zipPath, cachePath);
-    fs.rmSync(zipPath, { force: true });
+    try {
+        fs.renameSync(tempExtractDir, cachePath);
+    } catch {
+        fs.rmSync(cachePath, { recursive: true, force: true });
+        fs.renameSync(tempExtractDir, cachePath);
+    }
 
     const repoPath = resolveSkillRoot(cachePath);
     logger.info(`技能包已解压: ${repoPath}`);
-    return { repoPath, cachePath, entry };
+    return { repoPath, cachePath, entry, warnings };
 }
 
 export async function cloneOrUpdateRepo(
@@ -173,9 +212,10 @@ async function installFromCache(
     action: 'install' | 'update',
     requestedVersion: string | undefined,
     version: string
-): Promise<string[]> {
+): Promise<{ files: string[]; warnings: string[] }> {
     return withStateLockAsync(async () => {
-        const copiedFiles = copySkillFiles(repoPath, canonicalName);
+        const warnings: string[] = [];
+        const copiedFiles = copySkillFiles(repoPath, canonicalName, warnings);
         const contentHash = computeSkillDirHash(copiedFiles[0]);
         await updateInstallState(
             canonicalName,
@@ -186,7 +226,7 @@ async function installFromCache(
             version,
             contentHash
         );
-        return copiedFiles;
+        return { files: copiedFiles, warnings };
     });
 }
 
@@ -199,7 +239,9 @@ export async function downloadSkill(
     const normalizedSkillName = normalizeCliSkillArgument(skillName);
     const requestedVersion = options.version?.trim();
 
-    const entry = await findSkillIndexEntry(normalizedSkillName);
+    const entry = await findSkillIndexEntry(normalizedSkillName, {
+        forceRefresh: options.refresh === true
+    });
     if (!entry) {
         throw new GetSkillError(
             'SKILL_NOT_FOUND',
@@ -238,21 +280,24 @@ export async function downloadSkill(
             files: [skillDir],
             requestedVersion: requestedVersion || null,
             version: record?.version || entry.version,
-            upToDate: true
+            upToDate: true,
+            warnings: []
         };
     }
 
     const localModified = detectLocalModification(record, skillDir);
-    const { repoPath } = await fetchSkillToCache(entry.id, {
-        version: requestedVersion
-    });
-    const copiedFiles = await installFromCache(
-        canonicalName,
-        repoPath,
-        'install',
-        requestedVersion,
-        entry.version
+    const { repoPath, warnings: fetchWarnings } = await fetchSkillToCache(
+        entry.id,
+        { version: requestedVersion }
     );
+    const { files: copiedFiles, warnings: installWarnings } =
+        await installFromCache(
+            canonicalName,
+            repoPath,
+            'install',
+            requestedVersion,
+            entry.version
+        );
 
     logger.info(`技能 ${entry.id} (v${entry.version}) 安装成功！`);
     return {
@@ -261,7 +306,8 @@ export async function downloadSkill(
         files: copiedFiles,
         requestedVersion: requestedVersion || null,
         version: entry.version,
-        localModified
+        localModified,
+        warnings: [...fetchWarnings, ...installWarnings]
     };
 }
 
@@ -313,7 +359,8 @@ export async function updateSkill(
             files: [skillDir],
             requestedVersion: requestedVersion || null,
             version: record?.version || entry.version,
-            upToDate: true
+            upToDate: true,
+            warnings: []
         };
     }
 
@@ -324,16 +371,18 @@ export async function updateSkill(
     }
 
     const localModified = detectLocalModification(record, skillDir);
-    const { repoPath } = await fetchSkillToCache(entry.id, {
-        version: requestedVersion
-    });
-    const copiedFiles = await installFromCache(
-        canonicalName,
-        repoPath,
-        'update',
-        requestedVersion,
-        entry.version
+    const { repoPath, warnings: fetchWarnings } = await fetchSkillToCache(
+        entry.id,
+        { version: requestedVersion }
     );
+    const { files: copiedFiles, warnings: installWarnings } =
+        await installFromCache(
+            canonicalName,
+            repoPath,
+            'update',
+            requestedVersion,
+            entry.version
+        );
 
     logger.info(`技能 ${entry.id} 更新成功！`);
     return {
@@ -342,7 +391,8 @@ export async function updateSkill(
         files: copiedFiles,
         requestedVersion: requestedVersion || null,
         version: entry.version,
-        localModified
+        localModified,
+        warnings: [...fetchWarnings, ...installWarnings]
     };
 }
 
@@ -461,7 +511,7 @@ export async function updateAllSkills(
 
 export async function uninstallSkill(
     skillName: string,
-    options: { removeCache?: boolean } = {}
+    options: { removeCache?: boolean; force?: boolean } = {}
 ): Promise<RemoveInstalledSkillResult> {
     // 与 install/update 相同的安全门禁：避免误删非当前 Agent 目录下的技能
     assertExplicitSkillsDir();

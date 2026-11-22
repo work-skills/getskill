@@ -4,6 +4,8 @@ import https from 'https';
 import path from 'path';
 
 import {
+    MAX_DOWNLOAD_BYTES,
+    MAX_INDEX_RESPONSE_BYTES,
     getBaseUrl,
     getRequestTimeoutMs,
     getSkillsCacheDirectory,
@@ -88,6 +90,21 @@ export function request(
                     return;
                 }
 
+                // H6：拒绝 HTTPS→HTTP 降级重定向（防中间人篡改技能包）
+                if (
+                    urlObj.protocol === 'https:' &&
+                    new URL(newUrl).protocol === 'http:'
+                ) {
+                    res.resume();
+                    reject(
+                        new Error(
+                            `Refusing HTTPS to HTTP downgrade redirect: ${newUrl}`
+                        )
+                    );
+                    return;
+                }
+
+                res.resume();
                 request(newUrl, options, redirectCount + 1)
                     .then(resolve)
                     .catch(reject);
@@ -95,8 +112,20 @@ export function request(
             }
 
             let data = '';
+            let receivedBytes = 0;
 
             res.on('data', (chunk: Buffer | string) => {
+                receivedBytes += Buffer.byteLength(chunk);
+                // H5：文本响应体积上限，防异常/恶意服务器耗尽内存
+                if (receivedBytes > MAX_INDEX_RESPONSE_BYTES) {
+                    res.destroy();
+                    reject(
+                        new Error(
+                            `Response body exceeds limit ${MAX_INDEX_RESPONSE_BYTES} bytes: ${url}`
+                        )
+                    );
+                    return;
+                }
                 data += chunk.toString();
             });
 
@@ -211,6 +240,19 @@ export function downloadFile(
                     return;
                 }
 
+                // H6：拒绝 HTTPS→HTTP 降级重定向（防中间人篡改技能包）
+                if (
+                    urlObj.protocol === 'https:' &&
+                    new URL(newUrl).protocol === 'http:'
+                ) {
+                    reject(
+                        new Error(
+                            `Refusing HTTPS to HTTP downgrade redirect: ${newUrl}`
+                        )
+                    );
+                    return;
+                }
+
                 downloadFile(newUrl, destPath, redirectCount + 1)
                     .then(resolve)
                     .catch(reject);
@@ -231,7 +273,18 @@ export function downloadFile(
             const fileStream = fs.createWriteStream(destPath);
 
             res.on('data', (chunk: Buffer | string) => {
-                receivedBytes += chunk.length;
+                receivedBytes += Buffer.byteLength(chunk);
+                // H5：下载体积上限，超限立即中断并清理半成品文件
+                if (receivedBytes > MAX_DOWNLOAD_BYTES) {
+                    res.destroy();
+                    fileStream.destroy();
+                    fs.rmSync(destPath, { force: true });
+                    reject(
+                        new Error(
+                            `Skill package exceeds download limit ${MAX_DOWNLOAD_BYTES} bytes: ${url}`
+                        )
+                    );
+                }
             });
 
             res.on('error', (error) => {
@@ -298,6 +351,41 @@ export function getSkillPackageUrl(entry: SkillIndexEntry): string {
     }
 
     return `${getBaseUrl()}/${file.replace(/^\/+/, '')}`;
+}
+
+/**
+ * H6：下载前的地址策略校验。
+ * - 技能包地址与索引源不同源时默认拒绝（GETSKILL_ALLOW_CROSS_ORIGIN=1 可放行）；
+ * - 非本机回环地址的明文 HTTP 下载给出告警。
+ * search/show 仅展示 URL 不受影响，只有真正下载时调用。
+ */
+export function assertPackageUrlAllowed(url: string): void {
+    let target: URL;
+    try {
+        target = new URL(url);
+    } catch {
+        throw new GetSkillError('NETWORK_ERROR', `技能包地址无效: ${url}`);
+    }
+
+    const base = new URL(getBaseUrl());
+    if (
+        target.origin !== base.origin &&
+        process.env.GETSKILL_ALLOW_CROSS_ORIGIN !== '1'
+    ) {
+        throw new GetSkillError(
+            'NETWORK_ERROR',
+            `技能包地址跨域（${target.origin}，索引源为 ${base.origin}），默认拒绝下载。如信任该来源，请设置 GETSKILL_ALLOW_CROSS_ORIGIN=1 后重试`
+        );
+    }
+
+    if (
+        target.protocol === 'http:' &&
+        !['localhost', '127.0.0.1', '::1', '[::1]'].includes(target.hostname)
+    ) {
+        logger.warn(
+            `技能包将通过明文 HTTP 下载 (${target.origin})，内容可能被中间人篡改；建议使用 HTTPS 索引源`
+        );
+    }
 }
 
 interface CachedSkillsIndex {
@@ -386,6 +474,11 @@ export function peekSkillsIndexCache(): {
         skill_count: cache.skills.length,
         stale: !(ageMs >= 0 && ageMs < SKILLS_INDEX_CACHE_TTL_MS)
     };
+}
+
+/** 只读读取本地索引缓存条目（did-you-mean 建议使用，不触发下载）。 */
+export function readCachedIndexEntries(): SkillIndexEntry[] | null {
+    return readSkillsIndexCache()?.skills ?? null;
 }
 
 /** 删除本地索引缓存并重置进程内刷新标记（clean / 测试使用）。 */
@@ -618,33 +711,6 @@ export async function fetchSkillMarkdown(
         return response.body;
     } catch {
         return null;
-    }
-}
-
-export async function repositoryHasSkillFile(
-    skillName: string
-): Promise<boolean> {
-    if (!skillName || typeof skillName !== 'string') {
-        return false;
-    }
-
-    const normalized = skillName
-        .trim()
-        .replace(/^skills\//, '')
-        .replace(/[\\/]/g, '_');
-    if (!normalized) {
-        return false;
-    }
-
-    const url = `${getBaseUrl()}/skills/${encodeURIComponent(normalized)}/SKILL.md`;
-
-    try {
-        await request(url, {
-            timeout: Math.min(getRequestTimeoutMs(), 15_000)
-        });
-        return true;
-    } catch {
-        return false;
     }
 }
 

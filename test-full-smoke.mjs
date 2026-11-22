@@ -122,6 +122,17 @@ async function main() {
             r.json.error_codes.includes('AMBIGUOUS_SKILL'),
             'error_codes 缺 AMBIGUOUS_SKILL'
         );
+        assert(
+            r.json.error_codes.includes('UNMANAGED_SKILL') &&
+                r.json.error_codes.includes('EXTRACT_ERROR') &&
+                r.json.error_codes.includes('PACKAGE_INVALID'),
+            'error_codes 缺 3.2.1 新错误码'
+        );
+        assert(r.json.exit_codes && r.json.exit_codes['1'], 'exit_codes 缺失');
+        assert(
+            r.json.env_vars.includes('GETSKILL_ALLOW_CROSS_ORIGIN'),
+            'env_vars 缺 GETSKILL_ALLOW_CROSS_ORIGIN'
+        );
     });
     await t('无参数输出帮助且 exit 0', async () => {
         const r = await run([]);
@@ -170,6 +181,38 @@ async function main() {
         ]);
         eq(r.code, 1, 'exit');
         eq(r.json.error.code, 'INVALID_ARGS', 'code');
+    });
+    await t(
+        'install/uninstall 路径穿越名 .. → INVALID_ARGS（S1）',
+        async () => {
+            const i = await run(['install', '..', '--json']);
+            eq(i.code, 1, 'exit');
+            eq(i.json.error.code, 'INVALID_ARGS', 'install code');
+            const u = await run(['uninstall', '..', '--json']);
+            eq(u.code, 1, 'exit');
+            eq(u.json.error.code, 'INVALID_ARGS', 'uninstall code');
+            const n = await run(['uninstall', 'CON', '--json']);
+            eq(n.code, 1, 'exit');
+            eq(n.json.error.code, 'INVALID_ARGS', '保留设备名 code');
+        }
+    );
+    await t('install --version=true → INVALID_ARGS（布尔字面量）', async () => {
+        const r = await run(['install', SKILL, '--version=true', '--json']);
+        eq(r.code, 1, 'exit');
+        eq(r.json.error.code, 'INVALID_ARGS', 'code');
+    });
+    await t('重复 --limit 以最后一次为准', async () => {
+        const r = await run([
+            'search',
+            'pdf',
+            '--limit',
+            '2',
+            '--limit',
+            '3',
+            '--json'
+        ]);
+        eq(r.code, 0, 'exit');
+        eq(r.json.limit, 3, 'limit');
     });
 
     console.log('\n[B] search / index / show（真实站点）');
@@ -316,7 +359,25 @@ async function main() {
         assert(fs.existsSync(r.json.skill_md_path), 'skill_md_path 不存在');
         assert(r.json.next_step, 'next_step 缺失');
         assert(r.json.index && r.json.index.fetched_at, 'index 元数据缺失');
+        assert(Array.isArray(r.json.warnings), 'warnings[] 缺失（N2）');
         installedVersion = r.json.version;
+    });
+    await t('install --refresh 强制刷新索引后仍正确跳过', async () => {
+        const r = await run(['install', SKILL, '--refresh', '--json']);
+        eq(r.code, 0, 'exit');
+        eq(r.json.status, 'skipped', 'status');
+        eq(r.json.index.source, 'remote', 'refresh 应触发远端刷新');
+    });
+    await t('install 近似名 → SKILL_NOT_FOUND + suggestions', async () => {
+        const typo = SKILL.slice(0, -1);
+        const r = await run(['install', typo, '--json']);
+        eq(r.code, 1, 'exit');
+        eq(r.json.error.code, 'SKILL_NOT_FOUND', 'code');
+        assert(
+            Array.isArray(r.json.error.suggestions) &&
+                r.json.error.suggestions.includes(SKILL),
+            `suggestions 缺失: ${JSON.stringify(r.json.error.suggestions)}`
+        );
     });
     await t('重复 install → skipped 不降级', async () => {
         const r = await run(['install', SKILL, '--json']);
@@ -495,9 +556,26 @@ async function main() {
         const r = await run(['uninstall', SKILL, '--dry-run', '--json']);
         eq(r.code, 0, 'exit');
         eq(r.json.results[0].action, 'remove', 'action');
+        eq(r.json.results[0].managed, true, 'managed 标注');
         assert(
             fs.existsSync(path.join(skillsDir, SKILL)),
             'dry-run 删除了目录'
+        );
+    });
+    await t('uninstall --dry-run 未管理目录 → blocked + exit 1', async () => {
+        const r = await run([
+            'uninstall',
+            'manual-skill',
+            '--dry-run',
+            '--json'
+        ]);
+        eq(r.code, 1, 'exit');
+        eq(r.json.results[0].action, 'blocked', 'action');
+        eq(r.json.results[0].ok, false, 'ok');
+        eq(r.json.results[0].error.code, 'UNMANAGED_SKILL', 'code');
+        assert(
+            fs.existsSync(path.join(skillsDir, 'manual-skill')),
+            'dry-run 删除了未管理目录'
         );
     });
     await t('大小写不敏感 uninstall → removed', async () => {
@@ -512,18 +590,32 @@ async function main() {
         eq(r.code, 0, 'exit');
         eq(r.json.status, 'not_installed', 'status');
     });
-    await t('批量 uninstall（含未管理目录与不存在技能）', async () => {
+    await t('批量 uninstall：未管理目录默认拒删（S2）', async () => {
         const r = await run([
             'uninstall',
             'manual-skill',
             'no-such-skill-xyz',
             '--json'
         ]);
-        eq(r.code, 0, 'exit');
+        eq(r.code, 1, 'exit（拒删计为失败项）');
         eq(r.json.total, 2, 'total');
-        eq(r.json.failed, 0, 'failed');
-        eq(r.json.results[0].status, 'removed', 'manual removed');
+        eq(r.json.failed, 1, 'failed');
+        eq(r.json.results[0].error.code, 'UNMANAGED_SKILL', '逐项错误码');
         eq(r.json.results[1].status, 'not_installed', 'not_installed');
+        assert(
+            fs.existsSync(path.join(skillsDir, 'manual-skill')),
+            '未管理目录被误删'
+        );
+    });
+    await t('uninstall --force 删除未管理目录', async () => {
+        const r = await run(['uninstall', 'manual-skill', '--force', '--json']);
+        eq(r.code, 0, 'exit');
+        eq(r.json.status, 'removed', 'status');
+        eq(r.json.managed, false, 'managed');
+        assert(
+            !fs.existsSync(path.join(skillsDir, 'manual-skill')),
+            '--force 未删除目录'
+        );
     });
 
     console.log('\n[E] status / path / agents / config / clean / 网络');
@@ -532,6 +624,9 @@ async function main() {
         eq(r.code, 0, 'exit');
         eq(r.json.explicit_target, true, 'explicit_target');
         eq(r.json.state_locked, false, 'state_locked');
+        eq(r.json.cli_version, pkg.version, 'cli_version');
+        eq(r.json.lock_pid, null, 'lock_pid');
+        eq(r.json.lock_stale, false, 'lock_stale');
         assert(r.json.index && 'exists' in r.json.index, 'index 状态缺失');
         assert(
             r.json.installed && 'count' in r.json.installed,
@@ -572,6 +667,18 @@ async function main() {
         const sub = await run(['config', 'bogus', '--json']);
         eq(sub.code, 1, 'exit');
         eq(sub.json.error.code, 'INVALID_ARGS', 'code');
+    });
+    await t('clean --dry-run 只列出路径不删除', async () => {
+        const indexFile = path.join(cacheDir, 'skills-index.json');
+        assert(fs.existsSync(indexFile), '前置：索引缓存不存在');
+        const r = await run(['clean', '--dry-run', '--json']);
+        eq(r.code, 0, 'exit');
+        eq(r.json.dry_run, true, 'dry_run');
+        assert(
+            r.json.would_remove.includes(cacheDir),
+            'would_remove 缺缓存目录'
+        );
+        assert(fs.existsSync(indexFile), 'dry-run 删除了索引');
     });
     await t('clean --keep-index 保留索引，clean 全清', async () => {
         const indexFile = path.join(cacheDir, 'skills-index.json');

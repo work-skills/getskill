@@ -63,8 +63,14 @@ function splitCommand(command: string): string[] {
 export function executeCommand(
     command: string,
     cwd?: string,
-    options: { env?: NodeJS.ProcessEnv } = {}
+    options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}
 ): Promise<CommandOutput> {
+    const DEFAULT_TIMEOUT_MS = 60_000;
+    const MAX_OUTPUT_BYTES = 1024 * 1024;
+    const timeoutMs =
+        options.timeoutMs ??
+        (Number(process.env.GETSKILL_RESTART_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+
     return new Promise((resolve, reject) => {
         const parts = splitCommand(command);
         const [file, ...args] = parts;
@@ -74,39 +80,82 @@ export function executeCommand(
             return;
         }
 
-        const child = spawn(file, args, {
-            cwd,
-            env: {
-                ...process.env,
-                ...options.env
-            },
-            windowsHide: true,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
+        // Windows 上通过 shell 执行，保证 npm 的 .cmd shim（如 openclaw）可被找到；
+        // 命令来自用户显式配置（Agent 预设 / GETSKILL_RESTART_CMD），非远程输入。
+        const useShell = process.platform === 'win32';
+        const child = useShell
+            ? spawn(command, {
+                  cwd,
+                  env: { ...process.env, ...options.env },
+                  windowsHide: true,
+                  shell: true,
+                  stdio: ['ignore', 'pipe', 'pipe']
+              })
+            : spawn(file, args, {
+                  cwd,
+                  env: { ...process.env, ...options.env },
+                  windowsHide: true,
+                  stdio: ['ignore', 'pipe', 'pipe']
+              });
 
         let stdout = '';
         let stderr = '';
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let settled = false;
+
+        const timer = setTimeout(() => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            child.kill('SIGTERM');
+            reject(new Error(`命令执行超时 (${timeoutMs}ms): ${command}`));
+        }, timeoutMs);
+
+        const finish = (fn: () => void): void => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            fn();
+        };
 
         child.stdout.on('data', (chunk: Buffer | string) => {
-            stdout += chunk.toString();
+            const size = Buffer.byteLength(chunk);
+            if (stdoutBytes < MAX_OUTPUT_BYTES) {
+                stdout += chunk.toString();
+                stdoutBytes += size;
+            }
         });
 
         child.stderr.on('data', (chunk: Buffer | string) => {
-            stderr += chunk.toString();
+            const size = Buffer.byteLength(chunk);
+            if (stderrBytes < MAX_OUTPUT_BYTES) {
+                stderr += chunk.toString();
+                stderrBytes += size;
+            }
         });
 
         child.on('error', (error) => {
-            reject(new Error(`执行命令失败: ${error.message}`));
+            finish(() => reject(new Error(`执行命令失败: ${error.message}`)));
         });
 
         child.on('close', (code) => {
-            if (code === 0) {
-                resolve({ stdout, stderr });
-                return;
-            }
+            finish(() => {
+                if (code === 0) {
+                    resolve({ stdout, stderr });
+                    return;
+                }
 
-            const message = (stderr || stdout || `exit code ${code}`).trim();
-            reject(new Error(`命令执行失败 (${command}): ${message}`));
+                const message = (
+                    stderr ||
+                    stdout ||
+                    `exit code ${code}`
+                ).trim();
+                reject(new Error(`命令执行失败 (${command}): ${message}`));
+            });
         });
     });
 }

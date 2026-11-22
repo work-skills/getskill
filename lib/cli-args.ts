@@ -1,4 +1,5 @@
 import { GetSkillError } from './errors';
+import logger from './logger';
 
 /** 布尔开关：不消费下一个 token（如 `getskill --json search pdf`）。 */
 const BOOLEAN_FLAGS = new Set([
@@ -11,7 +12,8 @@ const BOOLEAN_FLAGS = new Set([
     'brief',
     'categories',
     'dry-run',
-    'keep-index'
+    'keep-index',
+    'refresh'
 ]);
 
 /** 必须带值的选项（缺值报 INVALID_ARGS，而不是静默当布尔）。 */
@@ -75,6 +77,14 @@ export function parseCommandOptions(rawArgs: string[]): {
     const options: Record<string, string | boolean> = {};
     let positionalOnly = false;
 
+    // 重复选项：后者生效，但给出告警避免 Agent 误以为两者都生效
+    const setOption = (key: string, value: string | boolean): void => {
+        if (Object.prototype.hasOwnProperty.call(options, key)) {
+            logger.warn(`选项 --${key} 重复出现，以最后一次的值为准`);
+        }
+        options[key] = value;
+    };
+
     const takeValue = (
         key: string,
         index: number
@@ -119,10 +129,12 @@ export function parseCommandOptions(rawArgs: string[]): {
             const inlineValue = eqIndex > -1 ? token.slice(eqIndex + 1) : null;
 
             if (BOOLEAN_FLAGS.has(key)) {
-                options[key] =
+                setOption(
+                    key,
                     inlineValue === null
                         ? true
-                        : parseBooleanValue(key, inlineValue);
+                        : parseBooleanValue(key, inlineValue)
+                );
                 continue;
             }
 
@@ -134,30 +146,30 @@ export function parseCommandOptions(rawArgs: string[]): {
             }
 
             if (inlineValue !== null) {
-                options[key] = inlineValue;
+                setOption(key, inlineValue);
                 continue;
             }
 
             const taken = takeValue(key, index);
-            options[key] = taken.value ?? true;
+            setOption(key, taken.value ?? true);
             index = taken.nextIndex;
             continue;
         }
 
         if (token === '-V') {
             const taken = takeValue('version', index);
-            options.version = taken.value ?? true;
+            setOption('version', taken.value ?? true);
             index = taken.nextIndex;
             continue;
         }
 
         if (token === '-h') {
-            options.help = true;
+            setOption('help', true);
             continue;
         }
 
         if (token === '-v') {
-            options.version = true;
+            setOption('version', true);
             continue;
         }
 

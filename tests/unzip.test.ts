@@ -24,6 +24,9 @@ interface ZipEntryInput {
     name: string;
     content?: string;
     deflate?: boolean;
+    crcOverride?: number;
+    externalAttrs?: number;
+    declaredSize?: number;
 }
 
 function buildZip(entries: ZipEntryInput[]): Buffer {
@@ -37,7 +40,7 @@ function buildZip(entries: ZipEntryInput[]): Buffer {
         const useDeflate = entry.deflate === true && raw.length > 0;
         const data = useDeflate ? zlib.deflateRawSync(raw) : raw;
         const method = useDeflate ? 8 : 0;
-        const crc = crc32(raw);
+        const crc = entry.crcOverride ?? crc32(raw);
 
         const localHeader = Buffer.alloc(30);
         localHeader.writeUInt32LE(0x04034b50, 0);
@@ -56,8 +59,9 @@ function buildZip(entries: ZipEntryInput[]): Buffer {
         centralHeader.writeUInt16LE(method, 10);
         centralHeader.writeUInt32LE(crc, 16);
         centralHeader.writeUInt32LE(data.length, 20);
-        centralHeader.writeUInt32LE(raw.length, 24);
+        centralHeader.writeUInt32LE(entry.declaredSize ?? raw.length, 24);
         centralHeader.writeUInt16LE(nameBuffer.length, 28);
+        centralHeader.writeUInt32LE(entry.externalAttrs ?? 0, 38);
         centralHeader.writeUInt32LE(offset, 42);
         centralChunks.push(centralHeader, nameBuffer);
 
@@ -178,5 +182,86 @@ describe('resolveSkillRoot', () => {
         fs.mkdirSync(path.join(tempDir, 'b'), { recursive: true });
 
         expect(resolveSkillRoot(tempDir)).toBe(tempDir);
+    });
+});
+
+describe('extractZip hardening (S4/S5)', () => {
+    it('rejects entries with a corrupted CRC', () => {
+        const tempDir = makeTempDir('getskill-unzip-');
+        const zipPath = path.join(tempDir, 'bad-crc.zip');
+        fs.writeFileSync(
+            zipPath,
+            buildZip([
+                { name: 'a.txt', content: 'hello', crcOverride: 0x12345678 }
+            ])
+        );
+        expect(() => extractZip(zipPath, path.join(tempDir, 'out'))).toThrow(
+            /CRC 校验/
+        );
+    });
+
+    it('rejects symlink entries', () => {
+        const tempDir = makeTempDir('getskill-unzip-');
+        const zipPath = path.join(tempDir, 'symlink.zip');
+        fs.writeFileSync(
+            zipPath,
+            buildZip([
+                {
+                    name: 'link',
+                    content: '/etc/passwd',
+                    externalAttrs: (0xa1ff << 16) >>> 0
+                }
+            ])
+        );
+        expect(() => extractZip(zipPath, path.join(tempDir, 'out'))).toThrow(
+            /符号链接/
+        );
+    });
+
+    it('rejects ADS / reserved-device / trailing-dot segments', () => {
+        expect(() => sanitizeZipEntryName('evil.txt:stream')).toThrow(
+            /非法路径段/
+        );
+        expect(() => sanitizeZipEntryName('dir/CON')).toThrow(/非法路径段/);
+        expect(() => sanitizeZipEntryName('dir/nul.md')).toThrow(/非法路径段/);
+        expect(() => sanitizeZipEntryName('file.')).toThrow(/非法路径段/);
+        expect(() => sanitizeZipEntryName('a\u0000b')).toThrow(/非法路径段/);
+    });
+
+    it('rejects entries declaring more than the per-entry limit', () => {
+        const tempDir = makeTempDir('getskill-unzip-');
+        const zipPath = path.join(tempDir, 'declared-big.zip');
+        fs.writeFileSync(
+            zipPath,
+            buildZip([
+                {
+                    name: 'big.bin',
+                    content: 'small',
+                    declaredSize: 21 * 1024 * 1024
+                }
+            ])
+        );
+        expect(() => extractZip(zipPath, path.join(tempDir, 'out'))).toThrow(
+            /单文件上限/
+        );
+    });
+
+    it('enforces the per-entry limit even when the header lies (zip bomb)', () => {
+        const tempDir = makeTempDir('getskill-unzip-');
+        const zipPath = path.join(tempDir, 'bomb.zip');
+        fs.writeFileSync(
+            zipPath,
+            buildZip([
+                {
+                    name: 'bomb.bin',
+                    content: 'a'.repeat(21 * 1024 * 1024),
+                    deflate: true,
+                    declaredSize: 100
+                }
+            ])
+        );
+        expect(() => extractZip(zipPath, path.join(tempDir, 'out'))).toThrow(
+            /单文件上限/
+        );
     });
 });

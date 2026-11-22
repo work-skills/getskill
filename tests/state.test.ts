@@ -14,7 +14,9 @@ import {
     normalizeCliSkillArgument,
     normalizeSkillName,
     pruneInstallState,
-    readInstallState
+    readInstallState,
+    removeInstalledSkill,
+    writeInstallState
 } from '../lib/state';
 import type { SkillStateRecord } from '../lib/types';
 
@@ -146,6 +148,168 @@ describe('state helpers', () => {
             delete process.env.GETSKILL_SKILLS_DIR;
             refreshConfig();
             fs.rmSync(tempHome, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('uninstall safety (S1/S2/S3)', () => {
+    function useTempEnv(): {
+        home: string;
+        skillsDir: string;
+        stateFile: string;
+    } {
+        const home = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'getskill-uninstall-')
+        );
+        const skillsDir = path.join(home, 'skills');
+        const stateFile = path.join(home, 'state.json');
+        fs.mkdirSync(skillsDir, { recursive: true });
+        process.env.GETSKILL_STATE_FILE = stateFile;
+        process.env.GETSKILL_SKILLS_DIR = skillsDir;
+        process.env.GETSKILL_CACHE_DIR = path.join(home, 'cache');
+        process.env.GETSKILL_LOG_LEVEL = 'silent';
+        refreshConfig();
+        return { home, skillsDir, stateFile };
+    }
+
+    function restoreEnv(home: string): void {
+        delete process.env.GETSKILL_STATE_FILE;
+        delete process.env.GETSKILL_SKILLS_DIR;
+        delete process.env.GETSKILL_CACHE_DIR;
+        delete process.env.GETSKILL_LOG_LEVEL;
+        refreshConfig();
+        fs.rmSync(home, { recursive: true, force: true });
+    }
+
+    it('refuses to delete unmanaged directories unless forced (S2)', () => {
+        const { home, skillsDir } = useTempEnv();
+        try {
+            const manualDir = path.join(skillsDir, 'manual-skill');
+            fs.mkdirSync(manualDir, { recursive: true });
+            fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+            expect(() => removeInstalledSkill('manual-skill')).toThrow(
+                /不由 getskill 管理/
+            );
+            expect(fs.existsSync(manualDir)).toBe(true);
+
+            const removed = removeInstalledSkill('manual-skill', {
+                force: true
+            });
+            expect(removed.removedInstall).toBe(true);
+            expect(removed.managed).toBe(false);
+            expect(fs.existsSync(manualDir)).toBe(false);
+        } finally {
+            restoreEnv(home);
+        }
+    });
+
+    it('removes managed skills and reports managed=true', () => {
+        const { home, skillsDir, stateFile } = useTempEnv();
+        try {
+            const skillDir = path.join(skillsDir, 'managed-skill');
+            fs.mkdirSync(skillDir, { recursive: true });
+            fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# managed');
+            writeInstallState({
+                skills: {
+                    'managed-skill': makeRecord(
+                        'managed-skill',
+                        skillDir,
+                        skillsDir
+                    )
+                }
+            });
+
+            const removed = removeInstalledSkill('managed-skill');
+            expect(removed.removedInstall).toBe(true);
+            expect(removed.managed).toBe(true);
+            expect(fs.existsSync(skillDir)).toBe(false);
+            expect(fs.existsSync(stateFile)).toBe(true);
+        } finally {
+            restoreEnv(home);
+        }
+    });
+    it('never deletes repoPath outside managed roots (S3)', () => {
+        const { home, skillsDir } = useTempEnv();
+        const outside = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'getskill-outside-')
+        );
+        try {
+            const skillDir = path.join(skillsDir, 'tampered-skill');
+            fs.mkdirSync(skillDir, { recursive: true });
+            fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# skill');
+            const precious = path.join(outside, 'precious');
+            fs.mkdirSync(precious, { recursive: true });
+            fs.writeFileSync(path.join(precious, 'data.txt'), 'keep me');
+
+            const record = makeRecord('tampered-skill', skillDir, skillsDir);
+            record.repoPath = precious;
+            writeInstallState({ skills: { 'tampered-skill': record } });
+
+            const removed = removeInstalledSkill('tampered-skill');
+            expect(removed.removedInstall).toBe(true);
+            expect(fs.existsSync(precious)).toBe(true);
+            expect(fs.existsSync(path.join(precious, 'data.txt'))).toBe(true);
+        } finally {
+            restoreEnv(home);
+            fs.rmSync(outside, { recursive: true, force: true });
+        }
+    });
+
+    it('rejects traversal names before touching the filesystem (S1)', () => {
+        const { home } = useTempEnv();
+        try {
+            expect(() => removeInstalledSkill('..')).toThrow(/不安全/);
+            expect(() => getInstalledSkillInfo('..')).toThrow(/不安全/);
+        } finally {
+            restoreEnv(home);
+        }
+    });
+});
+
+describe('state file robustness (H3)', () => {
+    it('backs up a corrupt state file and continues with empty state', () => {
+        const home = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'getskill-corrupt-')
+        );
+        const stateFile = path.join(home, 'state.json');
+        fs.writeFileSync(stateFile, '{ this is not valid json', 'utf8');
+        process.env.GETSKILL_STATE_FILE = stateFile;
+        process.env.GETSKILL_LOG_LEVEL = 'silent';
+        refreshConfig();
+        try {
+            expect(readInstallState()).toEqual({ skills: {} });
+            const backups = fs
+                .readdirSync(home)
+                .filter((name) => name.startsWith('state.json.corrupt-'));
+            expect(backups.length).toBe(1);
+        } finally {
+            delete process.env.GETSKILL_STATE_FILE;
+            delete process.env.GETSKILL_LOG_LEVEL;
+            refreshConfig();
+            fs.rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it('writes atomically without leaving temp files', () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'getskill-atomic-'));
+        const stateFile = path.join(home, 'state.json');
+        process.env.GETSKILL_STATE_FILE = stateFile;
+        refreshConfig();
+        try {
+            writeInstallState({ skills: {} });
+            writeInstallState({ skills: {} });
+            const leftovers = fs
+                .readdirSync(home)
+                .filter((name) => name.includes('.tmp-'));
+            expect(leftovers).toEqual([]);
+            expect(JSON.parse(fs.readFileSync(stateFile, 'utf8'))).toEqual({
+                skills: {}
+            });
+        } finally {
+            delete process.env.GETSKILL_STATE_FILE;
+            refreshConfig();
+            fs.rmSync(home, { recursive: true, force: true });
         }
     });
 });

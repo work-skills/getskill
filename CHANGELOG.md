@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.2.1] - 2026-11-22
+
+Security & robustness hardening release (audit items S1–S5 / H1–H6 / M1–M10 / N1–N8). JSON envelopes only gain fields; no fields were removed.
+
+### Security
+
+- **S1 (critical) path traversal fixed**: `normalizeSkillName` accepted `.`/`..`, so `getskill uninstall ..` resolved to the agent root directory and `rmSync` deleted it. All skill names are now validated by the new `lib/safe-name.ts` (`assertSafeSkillName`) at the CLI entry (`normalizeCliSkillArgument`) and at every state boundary; install/uninstall targets must resolve exactly one level under the skills directory (`assertContainedChildPath`, defense in depth). Rejected: `.`/`..`, `:` (drive/NTFS ADS), control characters, Windows reserved device names (CON/NUL/COM1-9/LPT1-9), trailing dot/space → `INVALID_ARGS`
+- **S2 unmanaged-directory protection**: `uninstall` now refuses to delete directories without a getskill install record for the current skills dir (`UNMANAGED_SKILL`, new error code); explicit `--force` required. `uninstall --dry-run` mirrors this (`action: "blocked"`, `ok: false`, non-zero exit) and reports `managed` / `local_modified`
+- **S3 `repoPath` containment**: the extracted-package path recorded in state is only deleted when it lies inside the cache root or `~/.getskill` (`isPathWithin`); tampered/migrated records pointing elsewhere are skipped with a warning
+- **S4 zip hardening** (`lib/unzip.ts`): per-entry 20MB / total 200MB decompression limits (`inflateRawSync` `maxOutputLength` + declared-size precheck, zip-bomb safe even with lying headers), CRC32 verification per entry, symlink entries rejected; all extraction failures now throw `EXTRACT_ERROR` (new code). Packages without skill `.md` files throw `PACKAGE_INVALID` (new code)
+- **S5 zip entry segment validation**: entry path segments reject ADS/drive characters, reserved device names, control characters and trailing dot/space (previously only `..`/absolute paths were blocked)
+- **H6 transport policy**: package downloads must be same-origin with the index (`base-url`); cross-origin package URLs are refused by default (`NETWORK_ERROR`) unless `GETSKILL_ALLOW_CROSS_ORIGIN=1`. HTTPS→HTTP downgrade redirects are refused; plain-HTTP non-loopback downloads warn. Search/show URL display is unaffected
+
+### Robustness
+
+- **H1 Windows reload hook fixed**: `executeCommand` runs via shell on win32 so npm `.cmd` shims (e.g. `openclaw gateway restart`) actually execute — `reloaded` is no longer permanently `false` on Windows
+- **H2 command timeout**: reload commands time out after 60s (`GETSKILL_RESTART_TIMEOUT_MS` override) with a 1MB output capture cap and single-settle guard
+- **H3 state file integrity**: `state.json` writes are atomic (tmp+rename); a corrupt file is warned about once, backed up as `state.json.corrupt-<timestamp>` and treated as empty instead of silently wiping records
+- **H4 concurrent installs**: unique temp zip/extract directory names per fetch; the canonical cache dir is swapped in only after successful extraction (with one retry on concurrent swap)
+- **H5 response size caps**: 10MB for text responses (index etc.), 100MB for package downloads; over-limit transfers are aborted and partial files cleaned up. Package size mismatches vs the index `size` field produce a warning
+- **M9 stale-lock race**: stale state locks are reclaimed via rename-claim so concurrent reclaimers no longer delete each other's fresh locks
+
+### Agent contract
+
+- **N1 semver correctness** (`lib/version.ts`): prereleases sort below the matching release (`1.0.0-beta < 1.0.0`, proper dot-identifier ordering), build metadata ignored; non-semver values (e.g. `unknown`) sort below any semver version — dirty records trigger one corrective update instead of being permanently "up to date"
+- **N2 `warnings[]` in install/update envelopes** (single and batch): skipped symlinks/oversized files and package-size mismatches are now visible to JSON agents, not just stderr
+- **Did-you-mean for skills**: `SKILL_NOT_FOUND` errors carry `error.suggestions` (top-3 index ids within edit distance 2, computed offline from the cached index) in both single and batch envelopes
+- **`--refresh` for install/update**: force an index-cache refresh before resolving the skill
+- **`update --all --dry-run` aligned with real execution**: only `SKILL_NOT_FOUND` counts as `stale`; other errors are failed plans (`ok: false`) with non-zero exit; envelope includes `index` meta
+- **`clean --dry-run`**: returns `would_remove` path list without deleting anything
+- **`status --json` additions**: `cli_version`, `lock_pid`, `lock_stale` (text output shows lock pid/staleness too)
+- **Batch envelopes**: install/update batches now include `index` meta and per-item `warnings`; uninstall batches include `agent` and per-item `managed`; single uninstall includes `managed`
+- **`--help --json`**: adds `exit_codes`, the three new error codes and new env vars; help text documents the security boundaries
+- Duplicate options keep the last value with a stderr warning; `--version=true/false/…` boolean literals are rejected (`INVALID_ARGS`); `--brief`/index truncation is Unicode-codepoint-safe (no split surrogate pairs)
+- Content hashes are computed over raw file bytes (binary files no longer false-positive as locally modified); `local_modified` is not reported when the hash cannot be computed
+- Removed dead `repositoryHasSkillFile` export
+
+### Compatibility notes
+
+- Content-hash algorithm changed (utf8 string → raw bytes): existing installs may report `local_modified: true` once until reinstalled/updated
+- Records with non-semver versions (e.g. `unknown`) now trigger one update instead of being skipped forever
+- Cross-origin package URLs are refused by default (opt-in via `GETSKILL_ALLOW_CROSS_ORIGIN=1`)
+- Uninstalling a directory without an install record now requires `--force` (`UNMANAGED_SKILL`)
+- JSON envelopes only gain fields (`warnings`, `suggestions`, `managed`, `cli_version`, `lock_pid`, `lock_stale`, `exit_codes`, batch `index`); no fields were removed
+
+### Tests
+
+- 121 unit tests (was 81): new `tests/safe-name.test.ts`, `tests/version.test.ts`; extended unzip (CRC/symlink/ADS/limits/bomb), state (S1/S2/S3, atomic write, corrupt backup), network (cross-origin policy), cli-args (`--refresh`, duplicates), agent-contract (unmanaged refusal, warnings, non-semver update, suggestions, blocked dry-run, status/clean/help fields)
+- Live-registry smoke extended to 62 checks (was 54), including traversal rejection, `--force` flows, `--refresh`, suggestions, `clean --dry-run` and the new status/help fields
+
 ## [3.2.0] - 2026-11-22
 
 ### Fixed (contract holes — agents could misread success/failure)
