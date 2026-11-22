@@ -1,175 +1,228 @@
 # GetSkill 使用示例
 
-## 场景 1: 首次使用（未安装 Git）
+> 当前版本基于 `getskill.work` 静态索引 + ZIP 包下载，提供**搜索、下载（安装）、更新**三大核心功能，全部**无需 Git、无需登录**。
 
-### Windows 用户
+## 场景 1: 搜索技能 → Agent 判断 → 安装/更新
+
+> `search` 只返回候选技能与简介（含本地安装状态），**不会自动安装任何技能**。
+> 由 Agent 根据简介判断需要哪个技能，再自行执行 `install` / `update` 命令。
 
 ```bash
-# 第一次运行安装命令
-$ getskill install commit-helper
+# 第一步: 搜索技能，把候选列表与简介返回给 Agent
+$ getskill search pdf-toolkit
 
-检测到系统未安装 Git，正在准备安装...
+找到 1 个技能:
 
-Windows 系统检测到未安装 Git
-正在下载 Git 安装程序...
+1. pdf-toolkit (v1.0.0)
+   描述: PDF 文档处理技能：提取文本、合并拆分、页面旋转与加水印。
+   分类: 文档处理
+   下载: https://getskill.work/skills/pdf-toolkit.zip
+   本地: 未安装（如需要: getskill install pdf-toolkit）
 
-下载进度: 100%
-下载完成！
+提示: search 只返回候选技能与简介，不会自动安装任何技能。
+      请由 Agent 根据简介判断需要哪个技能，再自行执行 getskill install / update <技能名称>。
 
-Git 安装程序已下载到: C:\Users\...\AppData\Local\Temp\git-installer.exe
+# 第二步: Agent 阅读简介后自行判断——
+#   - 简介匹配任务需求且未安装 → 执行 install
+#   - 已安装但版本落后（suggested_action=update）→ 执行 update
+#   - 同版本已安装（suggested_action=skip）或简介不匹配 → 不执行任何命令
 
-正在启动安装程序，请按照提示完成安装...
-安装完成后，请重新运行此命令。
+# 第三步: Agent 决定安装后，自行运行安装命令
+$ getskill install pdf-toolkit
 
-# Git 安装完成后，再次运行
-$ getskill install commit-helper
+下载技能: pdf-toolkit...
+下载技能包: https://getskill.work/skills/pdf-toolkit.zip
+下载完成 (1025 bytes)，正在解压...
+技能 pdf-toolkit (v1.0.0) 安装成功！
 
-下载技能: commit-helper...
-克隆仓库: https://getskill.work/skills/commit-helper.git...
-仓库克隆成功: C:\Users\...\\.openclaw\skills-cache\commit-helper
-
+目标 Agent: claude (Claude Code)
 技能已安装到 skills 目录:
-  - C:\Users\...\.openclaw\skills\commit-helper
+  - ~/.claude/skills/pdf-toolkit
 
-Git 仓库缓存: C:\Users\...\.openclaw\skills-cache\commit-helper
+本地缓存: ~/.getskill/cache/pdf-toolkit/pdf-toolkit
+已安装版本: 1.0.0
 ```
 
-### macOS 用户
+## 场景 2: 日常使用流程
 
 ```bash
-$ getskill install commit-helper
-
-检测到系统未安装 Git，正在准备安装...
-
-macOS 系统检测到未安装 Git
-请使用以下命令安装 Git:
-
-  brew install git
-
-如果未安装 Homebrew，请访问: https://brew.sh/
-
-# 安装 Git
-$ brew install git
-
-# 再次运行
-$ getskill install commit-helper
-✓ 安装成功
-```
-
-### Linux 用户
-
-```bash
-$ getskill install commit-helper
-
-检测到系统未安装 Git，正在准备安装...
-
-Linux 系统检测到未安装 Git
-请使用系统包管理器安装 Git:
-
-  Ubuntu/Debian: sudo apt-get install git
-  CentOS/RHEL:   sudo yum install git
-  Fedora:        sudo dnf install git
-  Arch:          sudo pacman -S git
-
-# Ubuntu/Debian 用户
-$ sudo apt-get install git
-
-# 再次运行
-$ getskill install commit-helper
-✓ 安装成功
-```
-
-## 场景 2: 已安装 Git（正常使用）
-
-```bash
-# 搜索技能
-$ getskill search commit
-
-找到 3 个技能:
-
-1. commit-helper
-   描述: 帮助生成规范的 git commit 信息
-  Git: https://getskill.work/skills/commit-helper.git
-
-2. commit-lint
-   描述: 检查 commit 信息是否符合规范
-  Git: https://getskill.work/skills/commit-lint.git
-
-# 安装技能
-$ getskill install commit-helper
-
-下载技能: commit-helper...
-克隆仓库: https://getskill.work/skills/commit-helper.git...
-仓库克隆成功: ~/.openclaw/skills-cache/commit-helper
-已复制技能目录: ~/.openclaw/skills-cache/commit-helper -> ~/.openclaw/skills/commit-helper
-
-技能已安装到 skills 目录:
-  - ~/.openclaw/skills/commit-helper
-
-Git 仓库缓存: ~/.openclaw/skills-cache/commit-helper
-
 # 列出已安装的技能
 $ getskill list
 
-本地已安装的技能 (1):
-1. commit-helper
+本地已安装的技能 (1) · Agent: claude · 目录: ~/.claude/skills
+1. pdf-toolkit
 
-# 更新技能
-$ getskill update commit-helper
+# 检查更新（版本比较）
+$ getskill update pdf-toolkit
 
-正在更新技能: commit-helper...
-Git 仓库已更新
-Already up to date.
-已复制技能目录: ~/.openclaw/skills-cache/commit-helper -> ~/.openclaw/skills/commit-helper
+正在更新技能: pdf-toolkit...
+发现新版本: 1.0.0 -> 1.1.0
+下载技能包: https://getskill.work/skills/pdf-toolkit.zip
+下载完成 (175000 bytes)，正在解压...
+技能 pdf-toolkit 更新成功！
 
+目标 Agent: claude (Claude Code)
 技能已更新到 skills 目录:
-  - ~/.openclaw/skills/commit-helper
+  - ~/.claude/skills/pdf-toolkit
+当前版本: 1.1.0
 
-# 查看目录路径
+# 已是最新时
+$ getskill update pdf-toolkit
+
+正在更新技能: pdf-toolkit...
+技能 pdf-toolkit 已是最新版本 (1.1.0)，无需更新
+
+技能已是最新版本 (v1.1.0)，无需更新。
+
+# 批量更新所有已安装技能（--prune 同时清理已下架技能的历史记录）
+$ getskill update --all
+$ getskill update --all --prune
+
+批量更新完成：1/1 个技能成功。
+
+# 查看某个技能的安装状态
+$ getskill inspect pdf-toolkit
+
+# 查看 Agent 与目录路径
 $ getskill path
 
-技能目录: ~/.openclaw/skills
-缓存目录: ~/.openclaw/skills-cache
+Agent: claude (Claude Code)
+技能目录: ~/.claude/skills
+缓存目录: ~/.getskill/cache
+配置文件: ~/.getskill/config.json
+状态文件: ~/.getskill/state.json
+站点地址: https://getskill.work
 
-# 清理缓存
+# 清理 ZIP 下载/解压缓存
 $ getskill clean
 
-已清理缓存目录: ~/.openclaw/skills-cache
+已清理缓存目录: ~/.getskill/cache
 ```
 
-## 场景 3: 编程接口使用
+## 场景 3: JSON 输出与脚本集成
+
+```bash
+$ getskill search xlsx --json
+
+{
+    "keyword": "xlsx",
+    "count": 1,
+    "results": [
+        {
+            "name": "xlsx",
+            "full_name": "xlsx",
+            "description": "...",
+            "html_url": "https://getskill.work/skill.html?id=xlsx",
+            "git_url": "https://getskill.work/skills/xlsx.zip",
+            "clone_url": "https://getskill.work/skills/xlsx.zip",
+            "download_url": "https://getskill.work/skills/xlsx.zip",
+            "version": "1.0.0",
+            "category": "文档处理",
+            "author": "Anthropic",
+            "size": 173410,
+            "installed": false,
+            "installed_version": null,
+            "suggested_action": "install"
+        }
+    ]
+}
+```
+
+Agent 集成建议：把 `--json` 结果（名称 + `description` + `suggested_action`）交给 Agent，
+由 Agent 判断需要哪个技能后再执行 `getskill install/update <名称>`；search 本身不安装任何技能。
+
+批量安装脚本（技能清单由人工/Agent 事先选定，而非直接安装全部搜索结果）：
+
+```bash
+#!/bin/bash
+skills=(
+    "pdf-extract"
+    "xlsx"
+    "docx"
+)
+
+for skill in "${skills[@]}"; do
+    echo "正在安装: $skill"
+    getskill install "$skill"
+    echo "---"
+done
+```
+
+### Agent 全 JSON 工作流（index / show / install / uninstall）
+
+```bash
+# 搜索无结果时，按分类紧凑浏览完整索引（不要直接读数 MB 的原始索引文件）
+$ getskill index --categories --json
+{ "command": "index", "total": 5459, "count": 20, "categories": [ { "category": "开发效率", "count": 1348 }, ... ] }
+
+$ getskill index --category 文档处理 --json --limit 50
+{ "command": "index", "category": "文档处理", "total": 12, "page": 1, "limit": 50, "count": 12,
+  "skills": [ { "name": "pdf-toolkit", "description": "…(截断到约120字符)", "version": "1.0.0", "category": "文档处理" }, ... ] }
+
+# 安装前预览 SKILL.md 全文
+$ getskill show pdf-toolkit --json
+{ "command": "show", "skill": "pdf-toolkit", "version": "1.0.0", "source": "remote", "skill_md": "---\nname: pdf-toolkit\n..." }
+
+# 安装 / 重复安装（幂等跳过）/ 更新 / 卸载，全部返回结果信封
+$ getskill install pdf-toolkit --json
+{ "command": "install", "status": "installed", "skill": "pdf-toolkit", "version": "1.0.0",
+  "up_to_date": false, "install_dir": "~/.claude/skills/pdf-toolkit", "files": [...], "agent": "claude" }
+
+$ getskill install pdf-toolkit --json
+{ "command": "install", "status": "skipped", "up_to_date": true, ... }
+
+$ getskill update pdf-toolkit --json
+{ "command": "update", "status": "up_to_date", "version": "1.0.0", ... }
+
+$ getskill uninstall pdf-toolkit --json
+{ "command": "uninstall", "status": "removed", "removed_install": true, "removed_cache": true, ... }
+
+# 本地状态
+$ getskill list --json
+{ "command": "list", "agent": "claude", "skills_dir": "~/.claude/skills", "count": 1, "skills": ["pdf-toolkit"] }
+
+$ getskill inspect pdf-toolkit --json
+{ "command": "inspect", "installed": true, "cached": true, "state": { "version": "1.0.0", ... }, ... }
+```
+
+出错时任何命令的 `--json` 都输出错误信封并非零退出，Agent 可按 `error.code` 程序化处理：
+
+```bash
+$ getskill search pdf --json --base-url http://127.0.0.1:9   # 站点不可用且无缓存
+{ "command": "search", "keyword": "pdf", "error": { "code": "NETWORK_ERROR", "message": "搜索失败: …" } }
+
+$ getskill install no-such-skill --json
+{ "command": "install", "error": { "code": "SKILL_NOT_FOUND", "message": "技能不存在: no-such-skill，…" } }
+```
+
+布尔开关可放在任意位置：`getskill --json search pdf --brief --limit 10`。
+
+## 场景 4: 编程接口使用
 
 ```javascript
 const getskill = require('@workskills/getskill');
 
 (async () => {
     try {
-        // 设置自定义 API 地址（可选）
+        // 设置自定义索引地址（可选）
         getskill.setBaseUrl('https://getskill.work');
 
-        // 查看当前 API 地址
-        console.log('当前 API:', getskill.getBaseUrl());
+        // 查看当前索引地址
+        console.log('当前索引:', getskill.getBaseUrl());
 
-        // 检查 Git 是否已安装
-        const isGitInstalled = await getskill.checkGitInstalled();
-        console.log('Git 已安装:', isGitInstalled);
-
-        if (!isGitInstalled) {
-            console.log('正在引导安装 Git...');
-            await getskill.ensureGitInstalled();
-        }
-
-        // 搜索技能
-        const results = await getskill.searchSkills('commit');
+        // 搜索技能（基于静态索引 data/skills.json）
+        // 只返回候选技能与简介（含 installed/suggested_action），不会安装任何技能
+        const results = await getskill.searchSkills('pdf');
         console.log('搜索结果:', results);
 
-        // 安装技能
-        const result = await getskill.downloadSkill('skills/commit-helper');
+        // 由调用方/Agent 根据简介判断后，再决定是否安装
+        // （示例中假定已选定 pdf-extract；下载 ZIP + 本地解压 + 复制）
+        const result = await getskill.downloadSkill('pdf-extract');
         console.log('安装成功:', result.files);
 
-        // 更新技能
-        await getskill.updateSkill('commit-helper');
-        console.log('更新成功');
+        // 更新技能（版本比较）
+        await getskill.updateSkill('pdf-extract');
+        console.log('更新检查完成');
 
         // 列出本地技能
         const localSkills = getskill.listLocalSkills();
@@ -178,30 +231,6 @@ const getskill = require('@workskills/getskill');
         console.error('错误:', error.message);
     }
 })();
-```
-
-## 场景 4: 批量安装技能
-
-```bash
-# 创建脚本 install-skills.sh
-#!/bin/bash
-
-skills=(
-    "commit-helper"
-    "code-review"
-    "test-generator"
-    "doc-writer"
-)
-
-for skill in "${skills[@]}"; do
-    echo "正在安装: $skill"
-    getskill install "$skill"
-    echo "---"
-done
-
-# 运行脚本
-$ chmod +x install-skills.sh
-$ ./install-skills.sh
 ```
 
 ## 场景 5: 错误处理
@@ -213,82 +242,122 @@ $ getskill install non-existent-skill
 下载技能失败: 技能不存在: non-existent-skill
 执行命令时出错: 技能不存在: non-existent-skill
 
-# Git URL 无效
-$ getskill install invalid-git-skill
-下载技能: invalid-git-skill...
-克隆仓库: https://getskill.work/skills/invalid-git-skill.git...
-克隆失败: fatal: repository 'https://getskill.work/skills/invalid-git-skill.git/' not found
-下载技能失败: Command failed: git clone...
-执行命令时出错: Command failed: git clone...
+# 搜索关键词没有匹配到技能
+$ getskill search 不存在的关键词
 
-# 网络问题
-$ getskill search commit
-搜索失败: 请求超时，请稍后重试
-未找到相关技能
-提示: 尝试使用不同的关键词，或访问 https://getskill.work 查看所有可用技能
+未找到与 "不存在的关键词" 匹配的技能。
+
+提示: Agent 可自行浏览完整技能索引，按名称/简介挑选合适的技能，
+      再执行 getskill install <技能名称> 安装使用；也可更换关键词重新搜索。
+      浏览索引（紧凑输出，适合 Agent）:
+        getskill index --categories
+        getskill index --category <分类> --json
+      本地索引文件: ~/.getskill/cache/skills-index.json
+        （JSON 格式，skills 数组含 id/name/description/version 等字段）
+      在线索引: https://getskill.work/data/skills.json
+
+# --json 无结果时同样返回指引字段（count=0 时附加 message/hint/index_url，索引文件存在时附加 index_file）
+$ getskill search 不存在的关键词 --json
+
+{
+  "keyword": "不存在的关键词",
+  "count": 0,
+  "results": [],
+  "message": "未找到与 \"不存在的关键词\" 匹配的技能",
+  "hint": "Agent 可用 getskill index --categories 查看分类，再用 getskill index --category <分类> --json 浏览紧凑技能列表，按名称/简介挑选后执行 getskill install <技能名称>；也可更换关键词重新搜索",
+  "index_file": "~/.getskill/cache/skills-index.json",
+  "index_url": "https://getskill.work/data/skills.json"
+}
+
+# 搜索失败（网络/站点不可用且无缓存）与"无结果"可区分：--json 输出 error.code 并非零退出
+$ getskill search pdf --json
+{ "command": "search", "keyword": "pdf", "error": { "code": "NETWORK_ERROR", "message": "搜索失败: …" } }
 ```
 
-## 场景 6: 配置自定义 API 地址
+## 场景 6: 切换 Agent / 自定义目录 / 自定义索引
 
 ```bash
-# 查看当前 API 地址
+# 查看当前生效配置（含来源）
 $ getskill config get
-当前 BASE_URL: https://getskill.work
 
-# 设置自定义 API 地址
-$ getskill config set https://custom-api.example.com
-BASE_URL 已设置为: https://custom-api.example.com
+base-url: https://getskill.work
+  来源: 默认值，未保存，使用默认站点
+agent: claude (Claude Code)
+  来源: 自动识别，未保存，自动识别本机 Agent
+skills-dir: ~/.claude/skills
+  来源: 自动识别，未单独保存，由 agent 推导
+cache-dir: ~/.getskill/cache
+  来源: 默认值，未保存，使用默认缓存目录
+配置文件: ~/.getskill/config.json
+状态文件: ~/.getskill/state.json
 
-# 通过环境变量设置
-$ GETSKILL_BASE_URL=https://another-api.com getskill search commit
-找到 2 个技能:
-...
+# 列出内置 Agent 预设
+$ getskill agents
 
-# 验证配置
-$ getskill config get
-当前 BASE_URL: https://custom-api.example.com
+# 切换到其它 Agent（持久化）
+$ getskill config set agent cursor
+agent: cursor (Cursor)
+  来源: 配置文件，已保存: cursor
+
+# 任意 Agent：直接指定技能目录（持久化）
+$ getskill config set skills-dir ~/.my-agent/skills
+
+# 只对本次命令生效
+$ getskill --agent codex install pdf-toolkit
+$ getskill --skills-dir ~/.my-agent/skills install pdf-toolkit
+
+# 删除配置项，恢复自动识别/默认值
+$ getskill config unset agent
+
+# 自定义索引地址（需要同样提供 /data/skills.json 与 /skills/<id>.zip）
+$ getskill config set base-url https://custom-index.example.com
+
+# 通过环境变量临时覆盖
+$ GETSKILL_BASE_URL=https://another-index.com getskill search pdf
 ```
 
 ## 场景 7: 目录结构查看
 
 ```bash
-# 安装几个技能后查看目录结构
-$ tree ~/.openclaw
+$ tree ~/.getskill
 
-~/.openclaw/
-├── skills/
-│   ├── commit-helper/
-│   ├── code-review/
-│   └── test-generator/
-└── skills-cache/
-    ├── commit-helper/
-    │   ├── commit-helper.md
-    │   ├── README.md
-    │   └── .git/
-    ├── code-review/
-    │   ├── code-review.md
-    │   ├── README.md
-    │   └── .git/
-    └── test-generator/
-        ├── test-generator.md
-        ├── README.md
-        └── .git/
+~/.getskill/
+├── config.json          # 持久化配置
+├── state.json           # 安装记录（技能名、版本、安装目录）
+└── cache/
+    └── pdf-toolkit/     # ZIP 解压后的技能包内容
+        └── pdf-toolkit/
+            └── SKILL.md
+
+$ tree ~/.claude/skills   # 当前 Agent 的技能目录
+
+~/.claude/skills/
+└── pdf-toolkit/
+    └── SKILL.md
 ```
 
 ## 常见问题
 
-### Q: Git 安装后仍提示未安装？
+### Q: 需要安装 Git 吗？
 
-A: Windows 用户需要重启终端或系统，以便环境变量生效。
+A: 不需要。搜索、安装、更新、卸载均通过 HTTP 直接下载 ZIP 并本地解压完成，全程不依赖 Git。
+
+### Q: 我用的 Agent 不在预设列表里怎么办？
+
+A: 用 `getskill config set skills-dir <path>`、`getskill --skills-dir <path> ...` 或 `GETSKILL_SKILLS_DIR=<path>` 指定该 Agent 的技能目录即可。
 
 ### Q: 如何卸载技能？
 
-A: 直接删除 `~/.openclaw/skills/` 目录下的对应技能目录即可。
+A: 使用 `getskill uninstall <技能名称>`，或直接删除当前技能目录（`getskill path` 可查看）下对应的子目录。
 
 ### Q: 缓存目录可以删除吗？
 
-A: 可以使用 `getskill clean` 清理缓存，下次更新技能时会重新克隆。
+A: 可以使用 `getskill clean` 清理缓存，下次安装/更新时会重新下载 ZIP。
 
-### Q: 如何手动指定 Git 路径？
+### Q: 更新是如何判断的？
 
-A: 确保 `git` 命令在系统 PATH 中，或修改 `~/.bashrc` / `~/.zshrc` 添加 Git 路径。
+A: 安装时会在本地记录技能版本；`update` 时拉取远端索引中的最新版本号进行比较，不一致才重新下载。
+
+### Q: `update --all` 提示某些技能“已跳过”是什么意思？
+
+A: 说明这些技能已从索引中下架或改名，本地只剩下历史记录。执行 `getskill update --all --prune` 可以清理这些失效记录。

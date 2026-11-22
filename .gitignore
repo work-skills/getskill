@@ -32,6 +32,15 @@ test/
 # Exclude package files
 package-lock.json
 npmuser.txt
+*.tgz
+
+# Exclude sensitive credentials / temp publish artifacts (never commit)
+.npmrc
+.npm_user.txt
+npmlogin*.txt
+publish_out.txt
+rebuild.txt
+test_result.md
 
 # Keep publish/runtime essentials tracked
 !package.json

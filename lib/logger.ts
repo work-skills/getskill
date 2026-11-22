@@ -24,7 +24,8 @@ function write(level: LogLevel, ...args: unknown[]): void {
         return;
     }
 
-    if (level === 'error') {
+    // error/debug 走 stderr，保证 --json 等 stdout 输出纯净
+    if (level === 'error' || level === 'debug') {
         console.error(...args);
         return;
     }

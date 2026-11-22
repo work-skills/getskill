@@ -62,10 +62,6 @@ function run(): void {
         typeof exported.getSkillsCacheDirectory === 'function',
         'getSkillsCacheDirectory 导出缺失'
     );
-    assert(
-        typeof exported.publishSkill === 'function',
-        'publishSkill 导出缺失'
-    );
 
     const originalLog = console.log;
     const logLines: string[] = [];
@@ -112,9 +108,18 @@ function run(): void {
         helpOutput.includes('getskill search <关键词> --json'),
         '帮助输出缺少 search --json 用法'
     );
+    assert(helpOutput.includes('getskill agents'), '帮助输出缺少 agents 用法');
     assert(
-        helpOutput.includes('getskill publish <目录> --repo <git-url>'),
-        '帮助输出缺少 publish 用法'
+        helpOutput.includes('getskill config set <key> <value>'),
+        '帮助输出缺少 config set 用法'
+    );
+    assert(
+        helpOutput.includes('--skills-dir <path>'),
+        '帮助输出缺少 --skills-dir 全局参数'
+    );
+    assert(
+        helpOutput.includes('--agent <name>'),
+        '帮助输出缺少 --agent 全局参数'
     );
 
     const versionOutput = exported.getCliVersion();

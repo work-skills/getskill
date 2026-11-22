@@ -1,7 +1,7 @@
 {
     "name": "@workskills/getskill",
-    "version": "1.1.8",
-    "description": "A skill management tool for OpenClaw that enables searching, downloading, and updating skill files from the getskill.work repository",
+    "description": "A skill management CLI for any AI agent (Claude Code, OpenClaw, Codex, Cursor, or a custom skills directory) that searches, installs, and updates skill files from the getskill.work registry",
+    "version": "3.1.0",
     "main": "dist/main.js",
     "types": "dist/main.d.ts",
     "bin": {
@@ -32,6 +32,9 @@
     },
     "homepage": "https://github.com/work-skills/getskill#readme",
     "keywords": [
+        "agent",
+        "agents",
+        "agent-skills",
         "openclaw",
         "workskills",
         "skill",
@@ -39,9 +42,11 @@
         "search",
         "install",
         "update",
-        "git",
         "cli",
         "claude",
+        "claude-code",
+        "codex",
+        "cursor",
         "ai",
         "automation"
     ],
@@ -51,7 +56,7 @@
     },
     "license": "MIT",
     "engines": {
-        "node": ">=12.0.0"
+        "node": ">=18.0.0"
     },
     "os": [
         "darwin",
@@ -59,7 +64,9 @@
         "win32"
     ],
     "files": [
-        "dist/",
+        "dist/main.js",
+        "dist/main.d.ts",
+        "dist/lib/",
         "README.md",
         "EXAMPLES.md",
         "LICENSE"
