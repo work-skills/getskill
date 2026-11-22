@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.2.0] - 2026-11-22
+
+### Fixed (contract holes — agents could misread success/failure)
+
+- **Unknown commands no longer print help with exit 0**: they now fail with an `INVALID_ARGS` envelope (plus a "did you mean …" suggestion) and a non-zero exit code. Unknown flags (`--josn`), missing flag values (`--limit` with no number) and invalid numeric values (`--limit abc`, `--page 0`) are rejected the same way instead of being silently ignored
+- **`config` errors go through the envelope**: `handleConfigCommand` no longer calls `process.exit(1)` directly; usage/validation errors throw `GetSkillError('INVALID_ARGS')` (config key/agent/base-url validation in `lib/config.ts` included), so `--json` callers always get `{ command: "config", error: { code, message } }`
+- **`update --all` partial failures exit non-zero**: the envelope now includes `succeeded` / `skipped` / `failed` counts, per-item `status` (`updated` / `up_to_date` / `stale` / `missing` / `failed`) and `code`, plus the `pruned` list; any real failure sets exit code 1
+- **`uninstall` of a non-existent skill reports `status: "not_installed"`** instead of `"removed"`
+- **Error envelopes echo context**: `skill` (install/update/uninstall/show/inspect) and `keyword` (search) are included; command aliases `get`/`download` are normalized to `install` in the envelope
+- **Case-normalization asymmetry fixed**: installs now use the canonical `entry.id` (resolved against existing local dirs/records via `resolveLocalSkillName`), and uninstall/inspect resolve names case-insensitively against state keys and real on-disk directory names (Windows NTFS-safe). `install PDF-Toolkit` followed by `uninstall pdf-toolkit` now works and leaves no stale state
+- **Extra positional arguments are rejected** for `search` / `show` / `inspect` / `update --all` instead of being silently dropped; `install` / `update` / `uninstall` accept multiple names as an explicit batch operation
+- **`--json` is honored even when argument parsing itself fails** (raw-arg fallback scan)
+
+### Added (capabilities)
+
+- **`getskill status [--json]`**: one-shot preflight combining config/target gate, index-cache age, installed skills (with versions/managed), stale records (dir manually deleted) and state-lock status
+- **`--dry-run` for install / update / update --all / uninstall**: read-only plans (`action`: install/update/skip/downgrade/missing/stale/remove/none, current/target version, `local_modified`), no downloads or writes
+- **Batch install/update/uninstall**: `getskill install a b c --json` returns `{ total, succeeded, failed, results[] }` with per-item error codes; non-zero exit on any failure
+- **Activation signals in install/update envelopes**: `skill_md_path`, `next_step`, `reload_command`, `reloaded` — the previously dead `restartAgentGateway` hook is now actually invoked after successful installs/updates (preset command or `GETSKILL_RESTART_CMD`)
+- **Index freshness in envelopes**: `index: { fetched_at, source: remote|cache|stale-cache, stale }` on search/index/show/install/update
+- **Search pagination metadata**: `total` / `page` / `limit` / `has_more` (symmetric with `index`); multi-word keywords are tokenized with AND semantics (`search "pdf merge"` works)
+- **`--json` for every command**: `path`, `agents`, `config get/set/unset/path`, `clean`, `--version`, and `--help --json` (machine-readable command table with flags/error codes/env vars)
+- **`list --json` returns details**: `skills[]` with `name` / `version` / `managed` / `skill_dir` / `updated_at` (directory scan merged with state); `names[]` kept for compatibility
+- **Local-modification detection**: installs store a content hash (`contentHash` in state); overwriting a modified skill warns and sets `local_modified: true` in the envelope; `inspect` reports `local_modified`
+- **`--timeout <ms>`** global flag overriding the 60s network timeout
+- **`clean --keep-index`** preserves `skills-index.json`; `clean --json` reports what was removed
+- **`AMBIGUOUS_SKILL` error code** when a normalized name matches multiple distinct index ids
+- `--` terminator; `--json=0/no/off` parsed as false; value flags never swallow a following command name
+- 28 new unit/CLI tests (81 total): strict parsing, semver, canonical naming, no-downgrade, local-modified, missing-dir skip, missing+delisted pruning, ambiguity, HTML fallback rejection, pagination meta, managed list, and spawned-process JSON envelope checks; `npm run test:smoke` runs a 54-check full-feature smoke against the live registry using the built CLI in an isolated temp environment
+
+### Changed
+
+- **Semver comparison** (`lib/version.ts`): `suggested_action: skip` and install/update skip now mean "local version ≥ site version" (numeric per-segment compare, `1.10.0 > 1.9.0`); silent downgrades are impossible unless an explicit older `--version` is requested
+- **`update --all` no longer resurrects manually deleted skills**: records whose install dir is missing are reported as `status: "missing"` and skipped (reinstall explicitly with `install`); if such a skill is also delisted from the index it is reported as `stale` and cleaned by `--prune` (previously these records could never be pruned)
+- `fetchSkillMarkdown` rejects HTML bodies (SPA fallback / error pages) instead of returning them as SKILL.md
+- `search --brief` also strips redundant `git_url` / `clone_url` / `html_url` / `download_url` fields to save agent context
+- `index --json` payloads carry `mode: "categories" | "list"` (and `category_count`) to disambiguate `count`; empty-category hints suggest similar category names
+- Install/update critical section (file copy + state write) is covered by the state lock as a whole (reentrant in-process); index cache writes are atomic (tmp + rename)
+- `updateAllSkills()` now returns `{ results, pruned }`; `restartAgentGateway()` returns `{ attempted, ok, command }`
+
 ## [3.1.0] - 2026-11-22
 
 ### Added

@@ -17,22 +17,26 @@ import {
     normalizeSkillIndexKey
 } from './network';
 import {
+    computeSkillDirHash,
     copySkillFiles,
     listInstalledSkillNames,
     normalizeCliSkillArgument,
-    normalizeSkillName,
     pruneInstallState,
     readInstallState,
     removeInstalledSkill,
-    updateInstallState
+    resolveLocalSkillName,
+    updateInstallState,
+    withStateLockAsync
 } from './state';
 import { ensureDirectoryExists, executeCommand } from './system';
 import { extractZip, resolveSkillRoot } from './unzip';
+import { compareVersions } from './version';
 import type {
     DownloadOptions,
     DownloadResult,
     RemoveInstalledSkillResult,
     SkillIndexEntry,
+    SkillStateRecord,
     UpdateAllOptions,
     UpdateAllResult
 } from './types';
@@ -78,7 +82,8 @@ export async function fetchSkillToCache(
     const cacheDir = getSkillsCacheDirectory();
     ensureDirectoryExists(cacheDir);
 
-    const localSkillName = normalizeSkillName(normalizedSkillName);
+    // 缓存目录与安装目录使用同一规范名（entry.id 解析出的本地名）
+    const localSkillName = resolveLocalSkillName(entry.id);
     const cachePath = path.join(cacheDir, localSkillName);
     const zipPath = path.join(cacheDir, `${localSkillName}.zip`);
     const downloadUrl = getSkillPackageUrl(entry);
@@ -108,15 +113,23 @@ export async function cloneOrUpdateRepo(
     return repoPath;
 }
 
+export interface RestartAgentResult {
+    /** 是否配置了重载命令（预设或 GETSKILL_RESTART_CMD）。 */
+    attempted: boolean;
+    /** 命令是否执行成功（未配置时为 false）。 */
+    ok: boolean;
+    command: string | null;
+}
+
 /**
  * 安装/更新后的可选 Agent 重载钩子。
  * 仅当 Agent 预设定义了重启命令，或设置了 `GETSKILL_RESTART_CMD` 时才执行。
  */
-export async function restartAgentGateway(): Promise<void> {
+export async function restartAgentGateway(): Promise<RestartAgentResult> {
     const restartCommand = getAgentRestartCommand();
 
     if (!restartCommand) {
-        return;
+        return { attempted: false, ok: false, command: null };
     }
 
     logger.info(`尝试执行: ${restartCommand}`);
@@ -124,13 +137,57 @@ export async function restartAgentGateway(): Promise<void> {
     try {
         await executeCommand(restartCommand);
         logger.info('Agent 服务重启成功，新技能应已生效。');
+        return { attempted: true, ok: true, command: restartCommand };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(
             `自动执行 "${restartCommand}" 失败，请手动重启 Agent 以加载新技能。`
         );
         logger.warn(`失败原因: ${message}`);
+        return { attempted: true, ok: false, command: restartCommand };
     }
+}
+
+/** 覆盖安装前检测本地内容是否被修改过（与安装时记录的哈希对比）。 */
+function detectLocalModification(
+    record: SkillStateRecord | undefined,
+    skillDir: string
+): boolean {
+    if (!record?.contentHash || !fs.existsSync(skillDir)) {
+        return false;
+    }
+    const currentHash = computeSkillDirHash(skillDir);
+    const modified = currentHash !== null && currentHash !== record.contentHash;
+    if (modified) {
+        logger.warn(
+            `检测到本地修改: ${skillDir} 的内容与安装时记录不一致，本次安装/更新将覆盖本地改动`
+        );
+    }
+    return modified;
+}
+
+/** 「复制技能文件 + 写 state」整体持锁，避免并发安装互相覆盖。 */
+async function installFromCache(
+    canonicalName: string,
+    repoPath: string,
+    action: 'install' | 'update',
+    requestedVersion: string | undefined,
+    version: string
+): Promise<string[]> {
+    return withStateLockAsync(async () => {
+        const copiedFiles = copySkillFiles(repoPath, canonicalName);
+        const contentHash = computeSkillDirHash(copiedFiles[0]);
+        await updateInstallState(
+            canonicalName,
+            repoPath,
+            copiedFiles[0],
+            action,
+            requestedVersion,
+            version,
+            contentHash
+        );
+        return copiedFiles;
+    });
 }
 
 export async function downloadSkill(
@@ -151,52 +208,60 @@ export async function downloadSkill(
     }
     assertVersionAvailable(entry, requestedVersion);
 
-    // 同版本已安装时跳过重复下载（--force 可强制重装）
-    const localSkillName = normalizeSkillName(normalizedSkillName);
-    const skillDir = path.join(getSkillsDirectory(), localSkillName);
-    const record = readInstallState().skills[localSkillName];
-    if (
-        options.force !== true &&
-        record &&
-        record.version &&
-        record.version === entry.version &&
-        fs.existsSync(skillDir)
-    ) {
+    // 规范名：以索引 entry.id 为准解析本地目录/state 键，
+    // 保证 install PDF-Toolkit 与 uninstall pdf-toolkit 指向同一技能。
+    const canonicalName = resolveLocalSkillName(entry.id);
+    const skillDir = path.join(getSkillsDirectory(), canonicalName);
+    const record = readInstallState().skills[canonicalName];
+
+    // 本地版本不低于站点版本时跳过（semver 比较，避免误降级）；
+    // 显式 --version 时按精确版本判断，--force 强制重装。
+    const alreadySatisfied =
+        Boolean(record?.version) &&
+        fs.existsSync(skillDir) &&
+        (requestedVersion
+            ? record?.version === requestedVersion
+            : compareVersions(
+                  record?.version as string,
+                  entry.version || '0'
+              ) >= 0);
+
+    if (options.force !== true && alreadySatisfied) {
         logger.info(
-            `技能 ${normalizedSkillName} 已安装且为最新版本 (${entry.version})，跳过重复安装。如需强制重装请使用 --force`
+            `技能 ${entry.id} 已安装且版本不低于站点版本 (${record?.version})，跳过重复安装。如需强制重装请使用 --force`
         );
         return {
-            skillName: normalizedSkillName,
+            skillName: entry.id,
             repoPath:
-                record.repoPath ||
-                path.join(getSkillsCacheDirectory(), localSkillName),
+                record?.repoPath ||
+                path.join(getSkillsCacheDirectory(), canonicalName),
             files: [skillDir],
             requestedVersion: requestedVersion || null,
-            version: entry.version,
+            version: record?.version || entry.version,
             upToDate: true
         };
     }
 
-    const { repoPath } = await fetchSkillToCache(normalizedSkillName, {
+    const localModified = detectLocalModification(record, skillDir);
+    const { repoPath } = await fetchSkillToCache(entry.id, {
         version: requestedVersion
     });
-    const copiedFiles = copySkillFiles(repoPath, normalizedSkillName);
-    await updateInstallState(
-        normalizedSkillName,
+    const copiedFiles = await installFromCache(
+        canonicalName,
         repoPath,
-        copiedFiles[0],
         'install',
         requestedVersion,
         entry.version
     );
 
-    logger.info(`技能 ${normalizedSkillName} (v${entry.version}) 安装成功！`);
+    logger.info(`技能 ${entry.id} (v${entry.version}) 安装成功！`);
     return {
-        skillName: normalizedSkillName,
+        skillName: entry.id,
         repoPath,
         files: copiedFiles,
         requestedVersion: requestedVersion || null,
-        version: entry.version
+        version: entry.version,
+        localModified
     };
 }
 
@@ -221,26 +286,33 @@ export async function updateSkill(
     }
     assertVersionAvailable(entry, requestedVersion);
 
-    const localSkillName = normalizeSkillName(normalizedSkillName);
-    const skillDir = path.join(getSkillsDirectory(), localSkillName);
-    const cachePath = path.join(getSkillsCacheDirectory(), localSkillName);
-    const record = readInstallState().skills[localSkillName];
+    const canonicalName = resolveLocalSkillName(entry.id);
+    const skillDir = path.join(getSkillsDirectory(), canonicalName);
+    const cachePath = path.join(getSkillsCacheDirectory(), canonicalName);
+    const record = readInstallState().skills[canonicalName];
 
-    if (
-        record &&
-        record.version &&
-        record.version === entry.version &&
-        fs.existsSync(skillDir)
-    ) {
+    // semver 比较：本地版本不低于站点版本即视为最新（不静默降级）；
+    // 显式 --version 指定旧版本时才允许降级。
+    const alreadyLatest =
+        Boolean(record?.version) &&
+        fs.existsSync(skillDir) &&
+        (requestedVersion
+            ? record?.version === requestedVersion
+            : compareVersions(
+                  record?.version as string,
+                  entry.version || '0'
+              ) >= 0);
+
+    if (alreadyLatest) {
         logger.info(
-            `技能 ${normalizedSkillName} 已是最新版本 (${entry.version})，无需更新`
+            `技能 ${entry.id} 已是最新版本 (${record?.version})，无需更新`
         );
         return {
-            skillName: normalizedSkillName,
-            repoPath: record.repoPath || cachePath,
+            skillName: entry.id,
+            repoPath: record?.repoPath || cachePath,
             files: [skillDir],
             requestedVersion: requestedVersion || null,
-            version: entry.version,
+            version: record?.version || entry.version,
             upToDate: true
         };
     }
@@ -251,38 +323,38 @@ export async function updateSkill(
         );
     }
 
-    const { repoPath } = await fetchSkillToCache(normalizedSkillName, {
+    const localModified = detectLocalModification(record, skillDir);
+    const { repoPath } = await fetchSkillToCache(entry.id, {
         version: requestedVersion
     });
-    const copiedFiles = copySkillFiles(repoPath, normalizedSkillName);
-    await updateInstallState(
-        normalizedSkillName,
+    const copiedFiles = await installFromCache(
+        canonicalName,
         repoPath,
-        copiedFiles[0],
         'update',
         requestedVersion,
         entry.version
     );
 
-    logger.info(`技能 ${normalizedSkillName} 更新成功！`);
+    logger.info(`技能 ${entry.id} 更新成功！`);
     return {
-        skillName: normalizedSkillName,
+        skillName: entry.id,
         repoPath,
         files: copiedFiles,
         requestedVersion: requestedVersion || null,
-        version: entry.version
+        version: entry.version,
+        localModified
     };
 }
 
 export async function updateAllSkills(
     options: UpdateAllOptions = {}
-): Promise<UpdateAllResult[]> {
+): Promise<{ results: UpdateAllResult[]; pruned: string[] }> {
     assertExplicitSkillsDir();
     const installedSkills = listInstalledSkillNames();
     const results: UpdateAllResult[] = [];
 
     if (installedSkills.length === 0) {
-        return results;
+        return { results, pruned: [] };
     }
 
     // 一次性拉取最新索引，用于识别已下架/改名的历史安装记录
@@ -302,11 +374,38 @@ export async function updateAllSkills(
     }
 
     const staleSkillNames: string[] = [];
+    const state = readInstallState();
 
     for (const skillName of installedSkills) {
         const missingInIndex = Boolean(
             indexKeys && !indexKeys.has(normalizeSkillIndexKey(skillName))
         );
+
+        // 记录存在但安装目录被手动删除 → 标记 missing 跳过，不静默“复活”重装；
+        // 若索引中也已下架，则记录彻底失效，归入 stale 以便 --prune 清理
+        const localName = resolveLocalSkillName(skillName);
+        const record = state.skills[localName];
+        if (record && record.installDir && !fs.existsSync(record.installDir)) {
+            if (missingInIndex) {
+                staleSkillNames.push(skillName);
+                results.push({
+                    skillName,
+                    ok: false,
+                    skipped: true,
+                    status: 'stale',
+                    error: '安装目录已不存在且技能索引中已下架（记录失效，--prune 可清理）'
+                });
+            } else {
+                results.push({
+                    skillName,
+                    ok: false,
+                    skipped: true,
+                    status: 'missing',
+                    error: '安装目录已不存在（可能被手动删除），已跳过；如需恢复请执行 getskill install <技能名称>'
+                });
+            }
+            continue;
+        }
 
         if (missingInIndex) {
             staleSkillNames.push(skillName);
@@ -314,6 +413,7 @@ export async function updateAllSkills(
                 skillName,
                 ok: false,
                 skipped: true,
+                status: 'stale',
                 error: '技能索引中已不存在该技能（历史安装记录失效）'
             });
             continue;
@@ -321,28 +421,42 @@ export async function updateAllSkills(
 
         try {
             const result = await updateSkill(skillName);
-            results.push({ skillName, ok: true, result });
+            results.push({
+                skillName,
+                ok: true,
+                status: result.upToDate ? 'up_to_date' : 'updated',
+                version: result.version ?? null,
+                result
+            });
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : String(error);
+            const code = getErrorCode(error);
             const skipped =
-                getErrorCode(error) === 'SKILL_NOT_FOUND' ||
-                message.includes('技能不存在');
+                code === 'SKILL_NOT_FOUND' || message.includes('技能不存在');
             if (skipped) {
                 staleSkillNames.push(skillName);
             }
-            results.push({ skillName, ok: false, skipped, error: message });
+            results.push({
+                skillName,
+                ok: false,
+                skipped,
+                status: skipped ? 'stale' : 'failed',
+                error: message,
+                code
+            });
         }
     }
 
+    let pruned: string[] = [];
     if (options.prune && staleSkillNames.length > 0) {
-        const pruned = pruneInstallState(staleSkillNames);
+        pruned = pruneInstallState(staleSkillNames);
         if (pruned.length > 0) {
             logger.info(`已清理失效安装记录: ${pruned.join(', ')}`);
         }
     }
 
-    return results;
+    return { results, pruned };
 }
 
 export async function uninstallSkill(
@@ -352,9 +466,16 @@ export async function uninstallSkill(
     // 与 install/update 相同的安全门禁：避免误删非当前 Agent 目录下的技能
     assertExplicitSkillsDir();
     const result = removeInstalledSkill(skillName, options);
-    logger.info(`已卸载技能目录: ${result.skillDir}`);
+    if (result.removedInstall) {
+        logger.info(`已卸载技能目录: ${result.skillDir}`);
+    }
     if (result.removedCache) {
         logger.info(`已移除缓存仓库: ${result.repoPath}`);
+    }
+    if (!result.removedInstall && !result.removedCache) {
+        logger.info(
+            `技能 ${result.localSkillName} 未安装（技能目录与缓存均不存在），无需卸载`
+        );
     }
 
     return result;

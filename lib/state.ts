@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 import {
     MAX_COPY_FILE_SIZE_BYTES,
@@ -18,6 +19,7 @@ import type {
     InstalledSkillSnapshot,
     InstallState,
     InstalledSkillInfo,
+    LocalSkillDetail,
     RemoveInstalledSkillResult,
     SkillStateRecord
 } from './types';
@@ -27,24 +29,84 @@ export function normalizeSkillName(skillName: string): string {
     return skillName.replace(/^skills\//, '').replace(/[\\/]/g, '_');
 }
 
+/** 索引查找键：忽略大小写，`_`/空白/路径分隔统一为 `-`。 */
+export function normalizeSkillIndexKey(skillName: string): string {
+    return skillName
+        .trim()
+        .replace(/^skills\//, '')
+        .replace(/[\\/_\s]+/g, '-')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase();
+}
+
+/**
+ * 把用户输入解析为本地实际使用的技能名（state 键或目录名）。
+ * 顺序：精确 state 键 → 忽略大小写 state 键 → 精确目录 → 忽略大小写目录 → 规范化输入。
+ * 修复「install PDF-Toolkit 后 uninstall pdf-toolkit 删不掉」的归一化不对称。
+ */
+export function resolveLocalSkillName(skillName: string): string {
+    const normalized = normalizeSkillName(skillName);
+    const lookupKey = normalizeSkillIndexKey(skillName);
+    const state = readInstallState();
+
+    if (state.skills[normalized]) {
+        return normalized;
+    }
+
+    const stateMatch = Object.keys(state.skills).find(
+        (key) => normalizeSkillIndexKey(key) === lookupKey
+    );
+    if (stateMatch) {
+        return stateMatch;
+    }
+
+    const skillsDir = getSkillsDirectory();
+    if (fs.existsSync(skillsDir)) {
+        try {
+            // 用 readdir 取真实目录名：Windows NTFS 的 existsSync 不区分大小写，
+            // 直接拼路径会丢失磁盘上的实际大小写。
+            const dirEntries = fs
+                .readdirSync(skillsDir, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory());
+            const exact = dirEntries.find((entry) => entry.name === normalized);
+            if (exact) {
+                return exact.name;
+            }
+            const dirMatch = dirEntries.find(
+                (entry) => normalizeSkillIndexKey(entry.name) === lookupKey
+            );
+            if (dirMatch) {
+                return dirMatch.name;
+            }
+        } catch {
+            // 目录不可读时回退为规范化输入
+        }
+    }
+
+    return normalized;
+}
+
 export function getRemoteSkillPath(skillName: string): string {
     return skillName.includes('/') ? skillName : `skills/${skillName}`;
 }
 
 export function normalizeCliSkillArgument(rawSkillName: string): string {
     if (!rawSkillName || typeof rawSkillName !== 'string') {
-        throw new Error(
+        throw new GetSkillError(
+            'INVALID_ARGS',
             '请提供技能名称，例如: getskill install pdf-extract 或 getskill install skills/xejrax_pdf-extract'
         );
     }
 
     const value = rawSkillName.trim();
     if (!value) {
-        throw new Error('技能名称不能为空');
+        throw new GetSkillError('INVALID_ARGS', '技能名称不能为空');
     }
 
     if (/^https?:\/\//i.test(value) || value.endsWith('.git')) {
-        throw new Error(
+        throw new GetSkillError(
+            'INVALID_ARGS',
             '请传入技能名称而不是 Git URL，例如: getskill install pdf-extract'
         );
     }
@@ -173,8 +235,16 @@ function sleepSync(ms: number): void {
 /**
  * 状态文件互斥锁（`state.json.lock`），防止多进程并发写丢记录。
  * 锁超过 30 秒视为残留（进程崩溃）自动回收；等待超时报 STATE_LOCKED。
+ * 进程内可重入：安装流程整体持锁时，内部 updateInstallState 不再重复抢锁。
  */
-function withStateLock<T>(fn: () => T): T {
+let stateLockDepth = 0;
+
+function acquireStateLock(): void {
+    if (stateLockDepth > 0) {
+        stateLockDepth += 1;
+        return;
+    }
+
     const lockPath = `${getStateFilePath()}.lock`;
     const timeoutMs =
         Number(process.env.GETSKILL_STATE_LOCK_TIMEOUT_MS) || 5_000;
@@ -184,7 +254,8 @@ function withStateLock<T>(fn: () => T): T {
     for (;;) {
         try {
             fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-            break;
+            stateLockDepth = 1;
+            return;
         } catch {
             try {
                 const stat = fs.statSync(lockPath);
@@ -205,11 +276,32 @@ function withStateLock<T>(fn: () => T): T {
             sleepSync(50);
         }
     }
+}
 
+function releaseStateLock(): void {
+    stateLockDepth -= 1;
+    if (stateLockDepth <= 0) {
+        stateLockDepth = 0;
+        fs.rmSync(`${getStateFilePath()}.lock`, { force: true });
+    }
+}
+
+function withStateLock<T>(fn: () => T): T {
+    acquireStateLock();
     try {
         return fn();
     } finally {
-        fs.rmSync(lockPath, { force: true });
+        releaseStateLock();
+    }
+}
+
+/** 在 state 锁内执行异步临界区（如「复制技能文件 + 写 state」整体）。 */
+export async function withStateLockAsync<T>(fn: () => Promise<T>): Promise<T> {
+    acquireStateLock();
+    try {
+        return await fn();
+    } finally {
+        releaseStateLock();
     }
 }
 
@@ -219,7 +311,8 @@ export async function updateInstallState(
     installDir: string,
     action: 'install' | 'update',
     requestedVersion?: string,
-    version?: string
+    version?: string,
+    contentHash?: string | null
 ): Promise<void> {
     withStateLock(() => {
         const localSkillName = normalizeSkillName(skillName);
@@ -243,7 +336,8 @@ export async function updateInstallState(
                 requestedVersion ?? previous?.requestedVersion ?? null,
             version: version ?? previous?.version ?? null,
             agent: getAgentName(),
-            skillsDir: getSkillsDirectory()
+            skillsDir: getSkillsDirectory(),
+            contentHash: contentHash ?? previous?.contentHash ?? null
         };
 
         writeInstallState(state);
@@ -373,8 +467,98 @@ export function listLocalSkills(): string[] {
 
     return fs
         .readdirSync(skillsDir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
         .map((entry) => entry.name);
+}
+
+/**
+ * 计算技能目录内容哈希（相对路径 + 文件内容，排序后 SHA-256）。
+ * 与 copyDirectoryRecursive 的口径一致：跳过 .git、符号链接、超大文件。
+ * 目录不存在或不可读时返回 null。
+ */
+export function computeSkillDirHash(dirPath: string): string | null {
+    if (!fs.existsSync(dirPath)) {
+        return null;
+    }
+
+    const parts: string[] = [];
+
+    const walk = (currentDir: string): void => {
+        const entries = fs
+            .readdirSync(currentDir, { withFileTypes: true })
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+        entries.forEach((entry) => {
+            if (entry.name === '.git') {
+                return;
+            }
+            const fullPath = path.join(currentDir, entry.name);
+            if (entry.isSymbolicLink()) {
+                return;
+            }
+            if (entry.isDirectory()) {
+                walk(fullPath);
+                return;
+            }
+            if (!entry.isFile()) {
+                return;
+            }
+            const stat = fs.lstatSync(fullPath);
+            if (stat.size > MAX_COPY_FILE_SIZE_BYTES) {
+                return;
+            }
+            const relativePath = path
+                .relative(dirPath, fullPath)
+                .replace(/\\/g, '/');
+            parts.push(
+                `${relativePath}\u0000${fs.readFileSync(fullPath, 'utf8')}`
+            );
+        });
+    };
+
+    try {
+        walk(dirPath);
+    } catch {
+        return null;
+    }
+
+    return crypto
+        .createHash('sha256')
+        .update(parts.join('\u0001'))
+        .digest('hex');
+}
+
+/**
+ * list 命令明细：目录扫描 + state 记录合并。
+ * managed=false 表示目录存在但不由 getskill 管理（手动放入）。
+ */
+export function listLocalSkillsDetailed(): LocalSkillDetail[] {
+    const skillsDir = getSkillsDirectory();
+    const state = readInstallState();
+    const records = Object.values(state.skills).filter(
+        recordMatchesCurrentSkillsDir
+    );
+    const recordByName = new Map<string, SkillStateRecord>();
+    records.forEach((record) => {
+        recordByName.set(record.localSkillName, record);
+        recordByName.set(normalizeSkillIndexKey(record.localSkillName), record);
+    });
+
+    return listLocalSkills()
+        .sort((a, b) => a.localeCompare(b))
+        .map((name) => {
+            const record =
+                recordByName.get(name) ||
+                recordByName.get(normalizeSkillIndexKey(name)) ||
+                null;
+            return {
+                name,
+                version: record?.version || null,
+                managed: Boolean(record),
+                skill_dir: path.join(skillsDir, name),
+                updated_at: record?.updatedAt || null
+            };
+        });
 }
 
 function recordSkillsDir(record: SkillStateRecord): string | null {
@@ -390,7 +574,9 @@ function recordSkillsDir(record: SkillStateRecord): string | null {
     return null;
 }
 
-function recordMatchesCurrentSkillsDir(record: SkillStateRecord): boolean {
+export function recordMatchesCurrentSkillsDir(
+    record: SkillStateRecord
+): boolean {
     const recordDir = recordSkillsDir(record);
     if (!recordDir) {
         return true;
@@ -489,17 +675,22 @@ function resolveCachePaths(
 
 export function getInstalledSkillInfo(skillName: string): InstalledSkillInfo {
     const normalizedSkillName = normalizeCliSkillArgument(skillName);
-    const localSkillName = normalizeSkillName(normalizedSkillName);
+    const localSkillName = resolveLocalSkillName(normalizedSkillName);
     const state = readInstallState();
     const record = state.skills[localSkillName] || null;
     const skillsDir = getSkillsDirectory();
     const skillDir = path.join(skillsDir, localSkillName);
     const { cacheDir, repoPath } = resolveCachePaths(localSkillName, record);
+    const installed = fs.existsSync(skillDir);
+    const localModified =
+        installed && Boolean(record?.contentHash)
+            ? computeSkillDirHash(skillDir) !== record?.contentHash
+            : false;
 
     return {
         skillName: normalizedSkillName,
         localSkillName,
-        installed: fs.existsSync(skillDir),
+        installed,
         cached: fs.existsSync(repoPath),
         skillDir,
         repoPath,
@@ -507,7 +698,8 @@ export function getInstalledSkillInfo(skillName: string): InstalledSkillInfo {
         skillsDir,
         agent: getAgentName(),
         agentLabel: getAgentLabel(),
-        state: record
+        state: record,
+        localModified
     };
 }
 
@@ -516,7 +708,7 @@ export function removeInstalledSkill(
     options: { removeCache?: boolean } = {}
 ): RemoveInstalledSkillResult {
     const normalizedSkillName = normalizeCliSkillArgument(skillName);
-    const localSkillName = normalizeSkillName(normalizedSkillName);
+    const localSkillName = resolveLocalSkillName(normalizedSkillName);
     const removeCache = options.removeCache !== false;
 
     const state = readInstallState();
@@ -548,7 +740,7 @@ export function removeInstalledSkill(
         }
     }
 
-    removeInstallState(normalizedSkillName);
+    removeInstallState(localSkillName);
 
     return {
         skillName: normalizedSkillName,

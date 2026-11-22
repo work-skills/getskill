@@ -148,25 +148,41 @@ for skill in "${skills[@]}"; do
 done
 ```
 
-### Agent 全 JSON 工作流（index / show / install / uninstall）
+### Agent 全 JSON 工作流（status / index / show / install / uninstall）
 
 ```bash
+# 第 0 步: 一次 status 完成前置检查（门禁/目录/索引缓存/已装技能/失效记录/锁）
+$ getskill status --json
+{ "command": "status", "agent": "claude", "skills_dir": "~/.claude/skills",
+  "explicit_target": true, "index": { "exists": true, "fetched_at": "…", "skill_count": 5459, "stale": false },
+  "installed": { "count": 1, "skills": [ { "name": "pdf-toolkit", "version": "1.0.0", "managed": true, ... } ] },
+  "stale_records": [], "state_locked": false }
+
 # 搜索无结果时，按分类紧凑浏览完整索引（不要直接读数 MB 的原始索引文件）
 $ getskill index --categories --json
-{ "command": "index", "total": 5459, "count": 20, "categories": [ { "category": "开发效率", "count": 1348 }, ... ] }
+{ "command": "index", "mode": "categories", "total": 5459, "category_count": 20,
+  "categories": [ { "category": "开发效率", "count": 1348 }, ... ], "index": { ... } }
 
 $ getskill index --category 文档处理 --json --limit 50
-{ "command": "index", "category": "文档处理", "total": 12, "page": 1, "limit": 50, "count": 12,
+{ "command": "index", "mode": "list", "category": "文档处理", "total": 12, "page": 1, "limit": 50, "count": 12,
   "skills": [ { "name": "pdf-toolkit", "description": "…(截断到约120字符)", "version": "1.0.0", "category": "文档处理" }, ... ] }
 
-# 安装前预览 SKILL.md 全文
+# 安装前预览 SKILL.md 全文（HTML fallback 不会被当成 SKILL.md）
 $ getskill show pdf-toolkit --json
-{ "command": "show", "skill": "pdf-toolkit", "version": "1.0.0", "source": "remote", "skill_md": "---\nname: pdf-toolkit\n..." }
+{ "command": "show", "skill": "pdf-toolkit", "version": "1.0.0", "source": "remote", "skill_md": "---\nname: pdf-toolkit\n...", "index": { ... } }
+
+# 预演（只读，不下载不写入）：确认动作与目标版本后再真正执行
+$ getskill install pdf-toolkit --dry-run --json
+{ "command": "install", "dry_run": true, "total": 1,
+  "results": [ { "skill": "pdf-toolkit", "action": "install", "current_version": null, "target_version": "1.0.0", "exists": false, ... } ] }
 
 # 安装 / 重复安装（幂等跳过）/ 更新 / 卸载，全部返回结果信封
 $ getskill install pdf-toolkit --json
 { "command": "install", "status": "installed", "skill": "pdf-toolkit", "version": "1.0.0",
-  "up_to_date": false, "install_dir": "~/.claude/skills/pdf-toolkit", "files": [...], "agent": "claude" }
+  "up_to_date": false, "install_dir": "~/.claude/skills/pdf-toolkit", "files": [...], "agent": "claude",
+  "local_modified": false, "index": { ... },
+  "skill_md_path": "~/.claude/skills/pdf-toolkit/SKILL.md", "next_step": "阅读 …/SKILL.md 并按其说明使用技能；…",
+  "reload_command": null, "reloaded": null }
 
 $ getskill install pdf-toolkit --json
 { "command": "install", "status": "skipped", "up_to_date": true, ... }
@@ -177,25 +193,42 @@ $ getskill update pdf-toolkit --json
 $ getskill uninstall pdf-toolkit --json
 { "command": "uninstall", "status": "removed", "removed_install": true, "removed_cache": true, ... }
 
-# 本地状态
+$ getskill uninstall pdf-toolkit --json   # 再次卸载：不再误报 removed
+{ "command": "uninstall", "status": "not_installed", "removed_install": false, "removed_cache": false, ... }
+
+# 批量操作：逐项结果 + 计数，部分失败时退出码非零
+$ getskill install pdf-toolkit excel-helper --json
+{ "command": "install", "total": 2, "succeeded": 2, "failed": 0, "results": [ { "skill": "pdf-toolkit", "ok": true, ... }, ... ] }
+
+$ getskill update --all --json
+{ "command": "update", "all": true, "total": 2, "succeeded": 1, "skipped": 1, "failed": 0, "pruned": [],
+  "results": [ { "skillName": "pdf-toolkit", "ok": true, "status": "up_to_date", ... },
+               { "skillName": "old-skill", "ok": false, "skipped": true, "status": "missing", "error": "安装目录已不存在…" } ] }
+
+# 本地状态（list 合并目录扫描与 state，标注 managed）
 $ getskill list --json
-{ "command": "list", "agent": "claude", "skills_dir": "~/.claude/skills", "count": 1, "skills": ["pdf-toolkit"] }
+{ "command": "list", "agent": "claude", "skills_dir": "~/.claude/skills", "count": 1,
+  "skills": [ { "name": "pdf-toolkit", "version": "1.0.0", "managed": true, "skill_dir": "…", "updated_at": "…" } ],
+  "names": ["pdf-toolkit"] }
 
 $ getskill inspect pdf-toolkit --json
-{ "command": "inspect", "installed": true, "cached": true, "state": { "version": "1.0.0", ... }, ... }
+{ "command": "inspect", "installed": true, "cached": true, "local_modified": false, "state": { "version": "1.0.0", ... }, ... }
 ```
 
-出错时任何命令的 `--json` 都输出错误信封并非零退出，Agent 可按 `error.code` 程序化处理：
+出错时任何命令的 `--json` 都输出错误信封并非零退出（含未知命令/未知选项/非法数值），Agent 可按 `error.code` 程序化处理：
 
 ```bash
 $ getskill search pdf --json --base-url http://127.0.0.1:9   # 站点不可用且无缓存
 { "command": "search", "keyword": "pdf", "error": { "code": "NETWORK_ERROR", "message": "搜索失败: …" } }
 
 $ getskill install no-such-skill --json
-{ "command": "install", "error": { "code": "SKILL_NOT_FOUND", "message": "技能不存在: no-such-skill，…" } }
+{ "command": "install", "skill": "no-such-skill", "error": { "code": "SKILL_NOT_FOUND", "message": "技能不存在: no-such-skill，…" } }
+
+$ getskill serch pdf --json   # 拼错命令：不再打印 help 假装成功
+{ "command": "serch", "error": { "code": "INVALID_ARGS", "message": "未知命令: serch（是否想执行 getskill search？）…" } }
 ```
 
-布尔开关可放在任意位置：`getskill --json search pdf --brief --limit 10`。
+布尔开关可放在任意位置：`getskill --json search pdf --brief --limit 10`；多词关键词用引号包裹（AND 匹配）：`getskill search "pdf merge" --json`。
 
 ## 场景 4: 编程接口使用
 
@@ -356,8 +389,8 @@ A: 可以使用 `getskill clean` 清理缓存，下次安装/更新时会重新�
 
 ### Q: 更新是如何判断的？
 
-A: 安装时会在本地记录技能版本；`update` 时拉取远端索引中的最新版本号进行比较，不一致才重新下载。
+A: 安装时会在本地记录技能版本与内容哈希；`update` 时拉取远端索引中的最新版本号做 semver 比较（`1.10.0 > 1.9.0`），站点版本更高才重新下载，不会静默降级。若本地文件被手动修改过，覆盖前会告警并在信封中标记 `local_modified: true`。
 
 ### Q: `update --all` 提示某些技能“已跳过”是什么意思？
 
-A: 说明这些技能已从索引中下架或改名，本地只剩下历史记录。执行 `getskill update --all --prune` 可以清理这些失效记录。
+A: 分两种：`status: "stale"` 表示技能已从索引中下架或改名（执行 `getskill update --all --prune` 可清理失效记录）；`status: "missing"` 表示安装目录被手动删除，getskill 不会静默重装，如需恢复请显式执行 `getskill install <名称>`。

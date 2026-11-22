@@ -5,24 +5,29 @@ import path from 'path';
 
 import {
     getBaseUrl,
+    getRequestTimeoutMs,
     getSkillsCacheDirectory,
-    REQUEST_TIMEOUT_MS,
     SKILLS_INDEX_CACHE_TTL_MS
 } from './config';
 import logger from './logger';
 import { GetSkillError } from './errors';
-import { getInstalledSkillsSnapshot } from './state';
+import { getInstalledSkillsSnapshot, normalizeSkillIndexKey } from './state';
 import { ensureDirectoryExists } from './system';
+import { compareVersions } from './version';
 import type {
     FetchIndexOptions,
     InstalledSkillSnapshot,
     RequestOptions,
     RequestResponse,
     SearchOptions,
+    SearchPage,
     SearchSkill,
     SkillIndexEntry,
+    SkillsIndexMeta,
     SkillsIndexPayload
 } from './types';
+
+export { normalizeSkillIndexKey } from './state';
 
 export function request(
     url: string,
@@ -52,7 +57,7 @@ export function request(
             path: urlObj.pathname + urlObj.search,
             method: options.method || 'GET',
             headers: options.headers || {},
-            timeout: options.timeout || REQUEST_TIMEOUT_MS
+            timeout: options.timeout || getRequestTimeoutMs()
         };
 
         const req = protocol.request(reqOptions, (res) => {
@@ -175,7 +180,7 @@ export function downloadFile(
             port: urlObj.port,
             path: urlObj.pathname + urlObj.search,
             method: 'GET',
-            timeout: REQUEST_TIMEOUT_MS
+            timeout: getRequestTimeoutMs()
         };
 
         const req = protocol.request(reqOptions, (res) => {
@@ -269,7 +274,7 @@ export function downloadFile(
             fs.rmSync(destPath, { force: true });
             reject(
                 new Error(
-                    `Request timeout after ${REQUEST_TIMEOUT_MS}ms: ${url}`
+                    `Request timeout after ${getRequestTimeoutMs()}ms: ${url}`
                 )
             );
         });
@@ -344,16 +349,49 @@ function writeSkillsIndexCache(skills: SkillIndexEntry[]): void {
             fetchedAt: new Date().toISOString(),
             skills
         };
-        fs.writeFileSync(cacheFile, JSON.stringify(payload, null, 2), 'utf8');
+        // 原子写：先写临时文件再 rename，避免并发读到半截 JSON
+        const tempFile = `${cacheFile}.tmp-${process.pid}`;
+        fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2), 'utf8');
+        fs.renameSync(tempFile, cacheFile);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(`技能索引缓存写入失败（不影响本次结果）: ${message}`);
     }
 }
 
+/** 最近一次 fetchSkillsIndex 的来源与新鲜度（供 JSON 信封输出）。 */
+let lastIndexMeta: SkillsIndexMeta = {
+    fetched_at: null,
+    source: 'none',
+    stale: false
+};
+
+export function getSkillsIndexMeta(): SkillsIndexMeta {
+    return { ...lastIndexMeta };
+}
+
+/** 只读查看本地索引缓存（status 命令使用，不触发下载）。 */
+export function peekSkillsIndexCache(): {
+    fetched_at: string;
+    skill_count: number;
+    stale: boolean;
+} | null {
+    const cache = readSkillsIndexCache();
+    if (!cache) {
+        return null;
+    }
+    const ageMs = Date.now() - Date.parse(cache.fetchedAt);
+    return {
+        fetched_at: cache.fetchedAt,
+        skill_count: cache.skills.length,
+        stale: !(ageMs >= 0 && ageMs < SKILLS_INDEX_CACHE_TTL_MS)
+    };
+}
+
 /** 删除本地索引缓存并重置进程内刷新标记（clean / 测试使用）。 */
 export function clearSkillsIndexCache(): void {
     indexDownloadedInProcess = false;
+    lastIndexMeta = { fetched_at: null, source: 'none', stale: false };
     const cacheFile = getSkillsIndexCacheFilePath();
     if (fs.existsSync(cacheFile)) {
         fs.rmSync(cacheFile, { force: true });
@@ -362,7 +400,7 @@ export function clearSkillsIndexCache(): void {
 
 async function downloadSkillsIndex(): Promise<SkillIndexEntry[]> {
     const url = getSkillsIndexUrl();
-    const response = await request(url, { timeout: REQUEST_TIMEOUT_MS });
+    const response = await request(url, { timeout: getRequestTimeoutMs() });
 
     if (!response.body || response.body.trim() === '') {
         throw new Error('技能索引为空: 服务器返回空响应');
@@ -412,6 +450,11 @@ export async function fetchSkillsIndex(
         logger.debug(
             `使用本地技能索引缓存: ${getSkillsIndexCacheFilePath()} (${cache?.fetchedAt})`
         );
+        lastIndexMeta = {
+            fetched_at: cache.fetchedAt,
+            source: 'cache',
+            stale: false
+        };
         return cache.skills;
     }
 
@@ -419,6 +462,11 @@ export async function fetchSkillsIndex(
         const skills = await downloadSkillsIndex();
         writeSkillsIndexCache(skills);
         indexDownloadedInProcess = true;
+        lastIndexMeta = {
+            fetched_at: new Date().toISOString(),
+            source: 'remote',
+            stale: false
+        };
         return skills;
     } catch (error) {
         if (cache) {
@@ -427,6 +475,11 @@ export async function fetchSkillsIndex(
             logger.warn(
                 `技能索引下载失败，回退到本地缓存 (${cache.fetchedAt}): ${message}`
             );
+            lastIndexMeta = {
+                fetched_at: cache.fetchedAt,
+                source: 'stale-cache',
+                stale: true
+            };
             return cache.skills;
         }
         throw new GetSkillError(
@@ -436,14 +489,40 @@ export async function fetchSkillsIndex(
     }
 }
 
-export function normalizeSkillIndexKey(skillName: string): string {
-    return skillName
+/** 关键词分词（空格分隔），每个词都必须命中某个字段（AND 语义）。 */
+export function matchIndexEntries(
+    entries: SkillIndexEntry[],
+    keyword: string
+): SkillIndexEntry[] {
+    if (!Array.isArray(entries) || entries.length === 0) {
+        return [];
+    }
+
+    const tokens = (keyword || '')
         .trim()
-        .replace(/^skills\//, '')
-        .replace(/[\\/_\s]+/g, '-')
-        .replace(/-{2,}/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .toLowerCase();
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+    if (tokens.length === 0) {
+        return [];
+    }
+
+    return entries.filter((entry) => {
+        const haystacks = [
+            entry.id,
+            entry.name,
+            entry.description,
+            entry.category || '',
+            entry.author || '',
+            ...(Array.isArray(entry.tags) ? entry.tags : [])
+        ]
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.toLowerCase());
+
+        return tokens.every((token) =>
+            haystacks.some((value) => value.includes(token))
+        );
+    });
 }
 
 export function filterIndexByKeyword(
@@ -452,32 +531,7 @@ export function filterIndexByKeyword(
     limit = 20,
     page = 1
 ): SkillIndexEntry[] {
-    if (!Array.isArray(entries) || entries.length === 0) {
-        return [];
-    }
-
-    const normalizedKeyword = (keyword || '').trim().toLowerCase();
-    if (!normalizedKeyword) {
-        return [];
-    }
-
-    const matched = entries.filter((entry) => {
-        const haystacks = [
-            entry.id,
-            entry.name,
-            entry.description,
-            entry.category || '',
-            entry.author || '',
-            ...(Array.isArray(entry.tags) ? entry.tags : [])
-        ];
-
-        return haystacks.some(
-            (value) =>
-                typeof value === 'string' &&
-                value.toLowerCase().includes(normalizedKeyword)
-        );
-    });
-
+    const matched = matchIndexEntries(entries, keyword);
     const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
     const safePage = Number.isFinite(page) && page > 0 ? page : 1;
     const start = (safePage - 1) * safeLimit;
@@ -522,13 +576,21 @@ export async function findSkillIndexEntry(
     }
 
     const entries = await fetchSkillsIndex(options);
-    return (
-        entries.find(
-            (entry) =>
-                normalizeSkillIndexKey(entry.id) === normalized ||
-                normalizeSkillIndexKey(entry.name || '') === normalized
-        ) || null
+    const matches = entries.filter(
+        (entry) =>
+            normalizeSkillIndexKey(entry.id) === normalized ||
+            normalizeSkillIndexKey(entry.name || '') === normalized
     );
+
+    const distinctIds = [...new Set(matches.map((entry) => entry.id))];
+    if (distinctIds.length > 1) {
+        throw new GetSkillError(
+            'AMBIGUOUS_SKILL',
+            `技能名称 "${skillName}" 匹配到多个不同技能: ${distinctIds.join(', ')}。请使用完整的技能 id 重试`
+        );
+    }
+
+    return matches[0] || null;
 }
 
 /**
@@ -546,8 +608,13 @@ export async function fetchSkillMarkdown(
     const url = `${getBaseUrl()}/skills/${encodeURIComponent(entry.id)}/SKILL.md`;
     try {
         const response = await request(url, {
-            timeout: Math.min(REQUEST_TIMEOUT_MS, 15_000)
+            timeout: Math.min(getRequestTimeoutMs(), 15_000)
         });
+        // 拒绝 SPA fallback / 错误页 HTML 被当成 SKILL.md
+        const head = response.body.trimStart().slice(0, 200).toLowerCase();
+        if (head.startsWith('<!doctype') || head.startsWith('<html')) {
+            return null;
+        }
         return response.body;
     } catch {
         return null;
@@ -572,26 +639,36 @@ export async function repositoryHasSkillFile(
     const url = `${getBaseUrl()}/skills/${encodeURIComponent(normalized)}/SKILL.md`;
 
     try {
-        await request(url, { timeout: Math.min(REQUEST_TIMEOUT_MS, 15_000) });
+        await request(url, {
+            timeout: Math.min(getRequestTimeoutMs(), 15_000)
+        });
         return true;
     } catch {
         return false;
     }
 }
 
-export async function searchSkills(
+/**
+ * 搜索并返回分页元数据（total/page/limit/has_more），
+ * 与 index 命令的 JSON 契约对称。
+ */
+export async function searchSkillsPage(
     keyword: string,
     options: SearchOptions = {}
-): Promise<SearchSkill[]> {
-    if (!keyword || typeof keyword !== 'string') {
+): Promise<SearchPage> {
+    if (!keyword || typeof keyword !== 'string' || !keyword.trim()) {
         throw new GetSkillError('INVALID_ARGS', '搜索失败: 关键词无效');
     }
 
     const { page = 1, limit = 20 } = options;
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
+    const safePage = Number.isFinite(page) && page > 0 ? page : 1;
 
     try {
         const entries = await fetchSkillsIndex();
-        const matched = filterIndexByKeyword(entries, keyword, limit, page);
+        const matched = matchIndexEntries(entries, keyword);
+        const start = (safePage - 1) * safeLimit;
+        const pageItems = matched.slice(start, start + safeLimit);
 
         const installedByKey = new Map<string, InstalledSkillSnapshot>();
         getInstalledSkillsSnapshot().forEach((item) => {
@@ -602,7 +679,7 @@ export async function searchSkills(
             );
         });
 
-        return matched.map((entry) => {
+        const results = pageItems.map((entry) => {
             const skill = mapIndexEntryToSearchSkill(entry);
             const local =
                 installedByKey.get(normalizeSkillIndexKey(entry.id)) ||
@@ -613,12 +690,24 @@ export async function searchSkills(
             skill.installed_version = local?.version ?? null;
             skill.suggested_action = !local
                 ? 'install'
-                : local.version && local.version === entry.version
+                : local.version &&
+                    compareVersions(local.version, entry.version || '0') >= 0
                   ? 'skip'
                   : 'update';
             return skill;
         });
+
+        return {
+            results,
+            total: matched.length,
+            page: safePage,
+            limit: safeLimit,
+            has_more: start + pageItems.length < matched.length
+        };
     } catch (error) {
+        if (error instanceof GetSkillError) {
+            throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         let friendly: string;
 
@@ -638,4 +727,12 @@ export async function searchSkills(
         // 抛出带错误码的异常，让调用方区分“搜索失败”与“无匹配结果”
         throw new GetSkillError('NETWORK_ERROR', friendly);
     }
+}
+
+export async function searchSkills(
+    keyword: string,
+    options: SearchOptions = {}
+): Promise<SearchSkill[]> {
+    const page = await searchSkillsPage(keyword, options);
+    return page.results;
 }

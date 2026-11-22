@@ -7,8 +7,8 @@ AI Agent 技能管理工具 - 从 getskill.work 搜索、下载和更新技能�
 - 🔍 从 `getskill.work` 静态技能索引（`data/skills.json`）搜索技能，支持 `--json` 输出与 `--limit/--page/--brief`
 - 🗂️ `getskill index` 紧凑浏览完整索引（分类统计 / 分类列表），`getskill show` 安装前预览 SKILL.md
 - ⚡ 索引本地缓存（TTL 1 天）：搜索优先读本地缓存，过期自动刷新，下载失败回退旧缓存（离线可搜索）
-- 🧠 搜索结果标注本地安装状态（`installed` / `installed_version` / `suggested_action`），同版本已装时 `install` 自动跳过下载（`--force` 可强制重装）
-- 🤝 面向 Agent 的 JSON 契约：install/update/uninstall/list/inspect 均支持 `--json` 结果信封；出错输出 `error.code`（如 `NETWORK_ERROR` / `SKILL_NOT_FOUND`）并非零退出
+- 🧠 搜索结果标注本地安装状态（`installed` / `installed_version` / `suggested_action`，semver 比较不会误降级），版本不低于站点时 `install` 自动跳过下载（`--force` 可强制重装）
+- 🤝 面向 Agent 的 JSON 契约：**所有命令**支持 `--json` 结果信封（含 `status` 一次前置检查、`--dry-run` 预演、批量操作、`next_step` 生效指引）；出错输出 `error.code`（如 `NETWORK_ERROR` / `SKILL_NOT_FOUND` / `INVALID_ARGS`）并非零退出，未知命令/选项不再静默成功
 - 📥 通过 HTTPS 直接下载技能 ZIP 包并在本地解压安装
 - 🔄 基于版本号比较的增量更新（`update` / `update --all`，`--prune` 可清理已下架技能的历史记录）
 - 🤖 **不绑定任何 Agent**：内置多种 Agent 目录预设，可自动识别本机 Agent
@@ -134,7 +134,7 @@ getskill search <关键词> --json --brief               # 简介截断到约 12
 - 索引缓存在 `<cache-dir>/skills-index.json`（默认 `~/.getskill/cache/skills-index.json`）。缓存时间在 1 天内时直接在本地搜索，超过 1 天自动重新下载；下载失败时回退到旧缓存，离线也能搜索。`getskill update` 会强制刷新缓存，`getskill clean` 会将其清除。
 - 每条搜索结果附带本地安装状态（文本输出的“本地: …”行，`--json` 中的字段），供 Agent 决策参考：
     - `installed` / `installed_version`：是否已安装到当前 Agent 的技能目录及其版本；
-    - `suggested_action`：`skip` = 同版本已装，无需重复安装；`update` = 已装但版本不同，可按需 `getskill update <名称>`；`install` = 未安装，可按需 `getskill install <名称>`。
+    - `suggested_action`：`skip` = 本地版本不低于站点版本（semver 比较），无需重复安装；`update` = 站点有更新版本，可按需 `getskill update <名称>`；`install` = 未安装，可按需 `getskill install <名称>`。
 
 ### 浏览完整索引（index）
 
@@ -276,27 +276,34 @@ getskill list
 
 ### --json 结果信封与错误码（面向 Agent）
 
-`search` / `index` / `show` / `install` / `update` / `uninstall` / `list` / `inspect` 均支持 `--json`：stdout 只输出最终 JSON，过程日志全部走 stderr。
+**所有命令**均支持 `--json`（含 `path` / `agents` / `config` / `clean` / `status` / `--version`；`--help --json` 输出机器可读命令表）：stdout 只输出最终 JSON，过程日志全部走 stderr。
 
 ```bash
+getskill status --json                 # 一次返回门禁/目录/索引缓存/已装技能/失效记录/锁状态
 getskill install pdf-toolkit --json
-# { "command": "install", "status": "installed" | "skipped", "skill": "...",
-#   "version": "...", "up_to_date": false, "install_dir": "...", "files": [...], ... }
+# { "command": "install", "status": "installed" | "skipped", "skill": "<规范 id>",
+#   "version": "...", "up_to_date": false, "install_dir": "...", "files": [...],
+#   "local_modified": false, "index": { "fetched_at", "source", "stale" },
+#   "skill_md_path": "...", "next_step": "...", "reload_command": null, "reloaded": null }
 
+getskill install a b c --json          # 批量: { command, total, succeeded, failed, results: [...] }
+getskill install pdf-toolkit --dry-run --json   # 只读预演计划，不下载不写入
 getskill update pdf-toolkit --json     # status: "updated" | "up_to_date"
-getskill update --all --json           # { command, all: true, total, succeeded, results: [...] }
-getskill uninstall pdf-toolkit --json  # { command, status: "removed", removed_install, removed_cache, ... }
-getskill list --json                   # { command, agent, skills_dir, count, skills: [...] }
-getskill inspect pdf-toolkit --json    # { command, ...安装/缓存/版本状态 }
+getskill update --all --json           # { command, all: true, total, succeeded, skipped, failed, pruned, results }
+                                       # 每项含 status: updated/up_to_date/stale/missing/failed 与 code；有失败时退出码非零
+getskill uninstall pdf-toolkit --json  # status: "removed" | "not_installed"（未安装不再误报 removed）
+getskill list --json                   # { command, agent, skills_dir, count, skills: [{name,version,managed,...}], names }
+getskill inspect pdf-toolkit --json    # { command, ...安装/缓存/版本状态, local_modified }
+getskill search "pdf merge" --json     # 多词 AND 匹配；信封含 total/page/limit/has_more/index
 ```
 
-出错时（任何命令）`--json` 输出错误信封并以非零码退出：
+出错时（任何命令，包括未知命令/未知选项/非法数值）`--json` 输出错误信封并以非零码退出：
 
 ```json
 {
-    "command": "search",
-    "keyword": "pdf",
-    "error": { "code": "NETWORK_ERROR", "message": "搜索失败: …" }
+    "command": "install",
+    "skill": "pdf-toolkit",
+    "error": { "code": "SKILL_NOT_FOUND", "message": "技能不存在: …" }
 }
 ```
 
@@ -307,8 +314,18 @@ getskill inspect pdf-toolkit --json    # { command, ...安装/缓存/版本状�
 | `VERSION_NOT_AVAILABLE` | 站点仅提供最新版本，`--version` 指定的版本不可用      |
 | `TARGET_NOT_CONFIGURED` | 技能目录仅来自自动识别，需显式指定 agent/skills-dir   |
 | `STATE_LOCKED`          | 状态文件被其他进程占用（`state.json.lock`），稍后重试 |
-| `INVALID_ARGS`          | 参数缺失或无效                                        |
+| `INVALID_ARGS`          | 未知命令/选项、参数缺失或非法数值                     |
+| `AMBIGUOUS_SKILL`       | 名称归一化后匹配多个不同技能，需使用完整 id           |
 | `UNKNOWN_ERROR`         | 其他未分类错误                                        |
+
+其他契约要点：
+
+- 版本比较采用 semver（`1.10.0 > 1.9.0`）：本地版本不低于站点版本时 `suggested_action=skip`，install/update 跳过，不会静默降级；显式 `--version` 指定旧版本才允许降级。
+- 技能名称大小写不敏感：安装使用索引规范 id，uninstall/inspect 按 state 键与真实目录名解析。
+- install/update 成功后按信封 `next_step` 阅读 `skill_md_path`；配置了重载命令（预设或 `GETSKILL_RESTART_CMD`）时会自动执行并回显 `reloaded`。
+- 覆盖被本地修改过的技能前会告警，信封 `local_modified=true`（安装时记录内容哈希）。
+- `update --all` 对「记录在、目录被手动删」的技能报 `missing` 并跳过，不会静默重装。
+- 全局 `--timeout <ms>` 调整网络超时（默认 60000）；`--` 之后全部视为位置参数。
 
 仓库内 `skill/getskill/SKILL.md` 提供了可直接发布到注册表的 getskill 工作流技能包，Agent 安装后即可按上述契约自主搜索/安装/更新技能。
 

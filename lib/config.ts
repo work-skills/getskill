@@ -10,6 +10,17 @@ export const REQUEST_TIMEOUT_MS = 60_000;
 export const SKILLS_INDEX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_COPY_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 
+let requestTimeoutOverrideMs: number | null = null;
+
+/** CLI `--timeout <ms>` 的进程级覆盖。 */
+export function setRequestTimeoutOverride(ms: number | null): void {
+    requestTimeoutOverrideMs = ms;
+}
+
+export function getRequestTimeoutMs(): number {
+    return requestTimeoutOverrideMs ?? REQUEST_TIMEOUT_MS;
+}
+
 export const AUTO_AGENT_NAME = 'auto';
 export const CUSTOM_AGENT_NAME = 'custom';
 export const DEFAULT_AGENT_NAME = 'claude';
@@ -164,7 +175,8 @@ export function isSamePath(left: string, right: string): boolean {
 export function normalizeBaseUrl(url: string): string {
     const trimmed = url.trim().replace(/\/+$/, '');
     if (!/^https?:\/\/.+/i.test(trimmed)) {
-        throw new Error(
+        throw new GetSkillError(
+            'INVALID_ARGS',
             `索引地址必须是 http(s) URL，例如 ${DEFAULT_BASE_URL}（收到: ${url}）`
         );
     }
@@ -175,7 +187,8 @@ export function normalizeConfigKey(key: string): ConfigKey {
     const normalized = key.trim().toLowerCase();
     const mapped = CONFIG_KEY_ALIASES[normalized];
     if (!mapped) {
-        throw new Error(
+        throw new GetSkillError(
+            'INVALID_ARGS',
             `未知配置项: ${key}（可用: base-url, agent, skills-dir, cache-dir）`
         );
     }
@@ -434,7 +447,8 @@ export function resolveConfig(): ResolvedConfig {
     const isAuto = requestedAgent === AUTO_AGENT_NAME;
 
     if (!preset && !isAuto && !skillsDirPick.value) {
-        throw new Error(
+        throw new GetSkillError(
+            'INVALID_ARGS',
             `未知 agent: ${agentPick.value}（可用: auto, ${AGENT_PRESETS.map(
                 (item) => item.name
             ).join(', ')}，或通过 skills-dir 指定任意目录）`
@@ -595,7 +609,10 @@ function persistConfig(patch: PersistedConfig): ResolvedConfig {
 
 function normalizeConfigValue(configKey: ConfigKey, rawValue: string): string {
     if (isBlank(rawValue)) {
-        throw new Error(`配置项 ${configKey} 的值不能为空`);
+        throw new GetSkillError(
+            'INVALID_ARGS',
+            `配置项 ${configKey} 的值不能为空`
+        );
     }
 
     const value = rawValue.trim();
@@ -610,7 +627,8 @@ function normalizeConfigValue(configKey: ConfigKey, rawValue: string): string {
 
     const normalized = value.toLowerCase();
     if (normalized !== AUTO_AGENT_NAME && !getAgentPreset(normalized)) {
-        throw new Error(
+        throw new GetSkillError(
+            'INVALID_ARGS',
             `未知 agent: ${value}（可用: auto, ${AGENT_PRESETS.map(
                 (item) => item.name
             ).join(', ')}）`

@@ -61,8 +61,35 @@ export interface SearchSkill {
     installed: boolean;
     /** 本地已安装版本（未安装或无版本记录时为 null）。 */
     installed_version: string | null;
-    /** 建议动作: skip=同版本已装, update=已装但版本不同, install=未安装。 */
+    /** 建议动作: skip=本地版本不低于站点版本, update=站点有更新版本, install=未安装。 */
     suggested_action: 'install' | 'update' | 'skip';
+}
+
+/** search 的分页元数据（与 index 命令对称）。 */
+export interface SearchPage {
+    results: SearchSkill[];
+    /** 匹配总数（分页前）。 */
+    total: number;
+    page: number;
+    limit: number;
+    has_more: boolean;
+}
+
+/** 索引来源与新鲜度（随 JSON 信封输出，供 Agent 判断是否需要刷新）。 */
+export interface SkillsIndexMeta {
+    fetched_at: string | null;
+    source: 'remote' | 'cache' | 'stale-cache' | 'none';
+    stale: boolean;
+}
+
+/** list 命令的本地技能明细（目录扫描 + state 合并）。 */
+export interface LocalSkillDetail {
+    name: string;
+    version: string | null;
+    /** 是否由 getskill 管理（state 中有记录）。 */
+    managed: boolean;
+    skill_dir: string;
+    updated_at: string | null;
 }
 
 export interface InstalledSkillSnapshot {
@@ -91,6 +118,8 @@ export interface SkillStateRecord {
     version?: string | null;
     agent?: string | null;
     skillsDir?: string | null;
+    /** 安装时技能目录内容的哈希，用于检测本地修改。 */
+    contentHash?: string | null;
 }
 
 export interface InstallState {
@@ -104,6 +133,8 @@ export interface DownloadResult {
     requestedVersion?: string | null;
     version?: string | null;
     upToDate?: boolean;
+    /** 覆盖前检测到本地内容与安装时记录不一致（本地改动将被覆盖）。 */
+    localModified?: boolean;
 }
 
 export interface DownloadOptions {
@@ -120,10 +151,15 @@ export interface UpdateAllOptions {
 export interface UpdateAllResult {
     skillName: string;
     ok: boolean;
-    /** 索引中已不存在该技能（历史记录失效），非失败。 */
+    /** 索引中已不存在 / 安装目录缺失等跳过情形，非失败。 */
     skipped?: boolean;
+    /** updated / up_to_date / stale / missing / failed */
+    status?: 'updated' | 'up_to_date' | 'stale' | 'missing' | 'failed';
+    version?: string | null;
     result?: DownloadResult;
     error?: string;
+    /** 失败时的结构化错误码。 */
+    code?: string;
 }
 
 export interface InstalledSkillInfo {
@@ -140,6 +176,8 @@ export interface InstalledSkillInfo {
     agent: string;
     agentLabel: string;
     state: SkillStateRecord | null;
+    /** 已安装目录内容与安装时记录的哈希不一致。 */
+    localModified?: boolean;
 }
 
 export interface RemoveInstalledSkillResult {

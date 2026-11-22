@@ -8,6 +8,7 @@ export type GetSkillErrorCode =
     | 'TARGET_NOT_CONFIGURED'
     | 'STATE_LOCKED'
     | 'INVALID_ARGS'
+    | 'AMBIGUOUS_SKILL'
     | 'UNKNOWN_ERROR';
 
 export class GetSkillError extends Error {
