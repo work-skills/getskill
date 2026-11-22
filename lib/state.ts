@@ -817,10 +817,16 @@ export function removeInstalledSkill(
             fs.existsSync(repoPath)
         ) {
             // S3：state 中的 repoPath 可能被篡改/迁移，只允许删除
-            // 缓存根目录或 getskill 家目录之内的路径
+            // 缓存根目录或 getskill 家目录「之内」的路径；
+            // 根目录本身（相等）不可删，否则会连 config/state 一起删掉；
+            // 包含技能目录的路径同样不可删，防止误删全部已安装技能
+            const cacheRoot = getSkillsCacheDirectory();
+            const homeRoot = getGetSkillHome();
+            const strictlyInside = (root: string): boolean =>
+                isPathWithin(root, repoPath) && !isSamePath(root, repoPath);
             const insideManagedRoots =
-                isPathWithin(getSkillsCacheDirectory(), repoPath) ||
-                isPathWithin(getGetSkillHome(), repoPath);
+                (strictlyInside(cacheRoot) || strictlyInside(homeRoot)) &&
+                !isPathWithin(repoPath, getSkillsDirectory());
             if (insideManagedRoots) {
                 fs.rmSync(repoPath, { recursive: true, force: true });
                 removedCache = true;

@@ -6,6 +6,7 @@ import path from 'path';
 import {
     AGENT_PRESETS,
     applyRuntimeOverrides,
+    assertExplicitSkillsDir,
     getAgentLabel,
     getAgentName,
     getAgentRestartCommand,
@@ -30,6 +31,7 @@ import {
 import logger from './lib/logger';
 import { GetSkillError, getErrorCode } from './lib/errors';
 import { parseCommandOptions, positiveIntOption } from './lib/cli-args';
+import { isPathWithin } from './lib/safe-name';
 import {
     fetchSkillMarkdown,
     fetchSkillsIndex,
@@ -97,7 +99,7 @@ export function printHelp(): void {
         '  getskill install <技能名称> --version <tag> - 安装指定版本（需与站点当前版本一致）'
     );
     console.log(
-        '  getskill install <技能名称> --force - 强制重装（同版本已安装时默认跳过下载）'
+        '  getskill install <技能名称> --force - 强制重装（同版本默认跳过；也用于确认覆盖无安装记录的手工目录）'
     );
     console.log(
         '  getskill install/update <技能名称> --refresh - 强制刷新技能索引缓存后再解析'
@@ -566,9 +568,16 @@ function truncateText(text: string, maxLength: number): string {
 /** --dry-run 的安装/更新预演计划（只读，不下载 ZIP、不写任何文件）。 */
 async function planSkillAction(
     skillName: string,
-    requestedVersion?: string
+    requestedVersion?: string,
+    force = false
 ): Promise<Record<string, unknown>> {
-    const entry = await findSkillIndexEntry(skillName, { forceRefresh: true });
+    // 与真实 install/update 对齐的门禁：目标未显式指定时预演同样报
+    // TARGET_NOT_CONFIGURED，避免“预演通过、执行被拒”的误导
+    assertExplicitSkillsDir();
+    const entry = await findSkillIndexEntry(skillName, {
+        forceRefresh: true,
+        noCacheWrite: true
+    });
     if (!entry) {
         throw new GetSkillError(
             'SKILL_NOT_FOUND',
@@ -585,6 +594,29 @@ async function planSkillAction(
     const info = getInstalledSkillInfo(entry.id);
     const localVersion = info.state?.version ?? null;
     const targetVersion = requestedVersion || entry.version;
+
+    // 与真实安装对齐：无安装记录的手工目录默认拒绝覆盖（UNMANAGED_SKILL）
+    const managed = Boolean(
+        info.state && recordMatchesCurrentSkillsDir(info.state)
+    );
+    if (info.installed && !managed && force !== true) {
+        return {
+            skill: entry.id,
+            ok: false,
+            action: 'blocked',
+            current_version: localVersion,
+            target_version: targetVersion,
+            install_dir: info.skillDir,
+            exists: true,
+            local_modified: Boolean(info.localModified),
+            size: typeof entry.size === 'number' ? entry.size : null,
+            error: {
+                code: 'UNMANAGED_SKILL',
+                message: `技能目录 ${info.skillDir} 不由 getskill 管理（无安装记录），需 --force 才会覆盖`
+            }
+        };
+    }
+
     let action: string;
     if (!info.installed) {
         action = 'install';
@@ -1171,7 +1203,11 @@ export async function cli(): Promise<void> {
                     for (const name of restArgs) {
                         try {
                             plans.push(
-                                await planSkillAction(name, requestedVersion)
+                                await planSkillAction(
+                                    name,
+                                    requestedVersion,
+                                    options.force === true
+                                )
                             );
                         } catch (error) {
                             plans.push({
@@ -2230,6 +2266,24 @@ export async function cli(): Promise<void> {
                 const cacheDir = getSkillsCacheDirectory();
                 const keepIndex = options['keep-index'] === true;
                 const removed: string[] = [];
+
+                // H8：缓存目录等于或包含技能目录时拒绝清理，
+                // 防止 cache-dir 误配置导致 clean 删掉已安装技能
+                const skillsDir = getSkillsDirectory();
+                const assertCacheCleanable = (dir: string): void => {
+                    if (isPathWithin(dir, skillsDir)) {
+                        throw new GetSkillError(
+                            'INVALID_ARGS',
+                            `缓存目录 ${dir} 等于或包含技能目录 ${skillsDir}，为避免误删已安装技能已拒绝清理；请用 getskill config set cache-dir <独立目录> 调整后重试`
+                        );
+                    }
+                };
+                assertCacheCleanable(cacheDir);
+                getLegacyCacheDirectories().forEach((legacyDir) => {
+                    if (fs.existsSync(legacyDir)) {
+                        assertCacheCleanable(legacyDir);
+                    }
+                });
 
                 if (options['dry-run'] === true) {
                     const wouldRemove: string[] = [];

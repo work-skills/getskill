@@ -240,7 +240,8 @@ function useTempEnv(): string {
 /** 异步 spawn：execFileSync 会阻塞 worker 事件循环，导致同进程 HTTP 服务无法响应。 */
 function runCli(
     args: string[],
-    home: string
+    home: string,
+    envPatch: Record<string, string | undefined> = {}
 ): Promise<{ stdout: string; code: number }> {
     return new Promise((resolve, reject) => {
         const child = spawn(
@@ -254,7 +255,8 @@ function runCli(
                     GETSKILL_CACHE_DIR: path.join(home, 'cache'),
                     GETSKILL_SKILLS_DIR: path.join(home, 'skills'),
                     GETSKILL_BASE_URL: baseUrl,
-                    GETSKILL_LOG_LEVEL: 'silent'
+                    GETSKILL_LOG_LEVEL: 'silent',
+                    ...envPatch
                 },
                 stdio: ['ignore', 'pipe', 'pipe']
             }
@@ -531,6 +533,27 @@ describe('agent contract behaviors (local server)', () => {
         expect(updated.upToDate).toBeFalsy();
         expect(updated.version).toBe('1.0.0');
     });
+
+    it('install/update refuse unmanaged directories unless forced (S2 install)', async () => {
+        const home = useTempEnv();
+        const manualDir = path.join(home, 'skills', 'pdf-extract');
+        fs.mkdirSync(manualDir, { recursive: true });
+        fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+        await expect(downloadSkill('pdf-extract')).rejects.toMatchObject({
+            code: 'UNMANAGED_SKILL'
+        });
+        await expect(updateSkill('pdf-extract')).rejects.toMatchObject({
+            code: 'UNMANAGED_SKILL'
+        });
+        expect(fs.readFileSync(path.join(manualDir, 'SKILL.md'), 'utf8')).toBe(
+            '# manual'
+        );
+
+        const forced = await downloadSkill('pdf-extract', { force: true });
+        expect(forced.upToDate).toBeFalsy();
+        expect(readInstallState().skills['pdf-extract']).toBeTruthy();
+    });
 });
 
 describe('cli json envelope (spawned process)', () => {
@@ -557,6 +580,63 @@ describe('cli json envelope (spawned process)', () => {
         const payload = JSON.parse(stdout);
         expect(payload.error.code).toBe('INVALID_ARGS');
         expect(payload.error.message).toContain('search');
+    });
+
+    it('install --dry-run enforces the target gate and writes nothing (N10)', async () => {
+        const home = useTempEnv();
+        const { stdout, code } = await runCli(
+            ['install', 'pdf-extract', '--dry-run', '--json'],
+            home,
+            { GETSKILL_SKILLS_DIR: undefined, GETSKILL_AGENT: undefined }
+        );
+        expect(code).toBe(1);
+        const payload = JSON.parse(stdout);
+        expect(payload.results[0].ok).toBe(false);
+        expect(payload.results[0].error.code).toBe('TARGET_NOT_CONFIGURED');
+        expect(
+            fs.existsSync(path.join(home, 'cache', 'skills-index.json'))
+        ).toBe(false);
+    });
+
+    it('install --dry-run blocks unmanaged dirs like real install (S2)', async () => {
+        const home = useTempEnv();
+        const manualDir = path.join(home, 'skills', 'pdf-extract');
+        fs.mkdirSync(manualDir, { recursive: true });
+        fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+        const { stdout, code } = await runCli(
+            ['install', 'pdf-extract', '--dry-run', '--json'],
+            home
+        );
+        expect(code).toBe(1);
+        const payload = JSON.parse(stdout);
+        expect(payload.results[0].action).toBe('blocked');
+        expect(payload.results[0].error.code).toBe('UNMANAGED_SKILL');
+        expect(fs.readFileSync(path.join(manualDir, 'SKILL.md'), 'utf8')).toBe(
+            '# manual'
+        );
+
+        const forced = await runCli(
+            ['install', 'pdf-extract', '--dry-run', '--force', '--json'],
+            home
+        );
+        expect(forced.code).toBe(0);
+        expect(JSON.parse(forced.stdout).results[0].ok).toBe(true);
+    });
+
+    it('clean refuses when cache dir equals skills dir (H8)', async () => {
+        const home = useTempEnv();
+        const skills = path.join(home, 'skills');
+        const manualDir = path.join(skills, 'manual-skill');
+        fs.mkdirSync(manualDir, { recursive: true });
+        fs.writeFileSync(path.join(manualDir, 'SKILL.md'), '# manual');
+
+        const { stdout, code } = await runCli(['clean', '--json'], home, {
+            GETSKILL_CACHE_DIR: skills
+        });
+        expect(code).toBe(1);
+        expect(JSON.parse(stdout).error.code).toBe('INVALID_ARGS');
+        expect(fs.existsSync(path.join(manualDir, 'SKILL.md'))).toBe(true);
     });
 
     it('unknown flag exits non-zero with INVALID_ARGS', async () => {

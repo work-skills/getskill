@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.3.0] - 2026-11-22
+
+Follow-up security & interaction audit (items H7–H8 / S2-install / S3-strict / N9–N10). All findings were reproduced against 3.2.1 before fixing.
+
+### Security
+
+- **H7 redirect policy bypass fixed**: `request()` / `downloadFile()` now enforce the same-origin policy on every redirect hop, not just the initial URL — a malicious or compromised index server can no longer use a 302 to slip a cross-origin package past `assertPackageUrlAllowed` (`GETSKILL_ALLOW_CROSS_ORIGIN=1` still opts out)
+- **H8 `clean` directory-overlap guard**: `clean` (and `clean --dry-run`) refuses to run when the cache dir (or a legacy cache dir) equals or contains the skills dir (`INVALID_ARGS`), preventing a misconfigured `cache-dir` from wiping installed skills
+- **S2 extended to install/update**: installing/updating over an existing skill directory that has no getskill install record for the current skills dir is refused (`UNMANAGED_SKILL`) instead of silently overwriting manual content; `--force` confirms the overwrite. `install --dry-run` mirrors this (`action: "blocked"`, `ok: false`)
+- **S3 strict containment**: a tampered `state.repoPath` equal to the cache root or `~/.getskill` itself is no longer deleted on uninstall (previously `isPathWithin` allowed equality, so uninstall could delete the whole home dir including config/state); paths containing the skills dir are also skipped
+
+### Robustness / Agent contract
+
+- **N9 UTF-8 chunk-boundary corruption fixed**: text responses are collected as bytes and decoded once, so multi-byte characters split across TCP chunks no longer turn into U+FFFD (previously corrupted Chinese descriptions in the index could break JSON parsing or did-you-mean matching)
+- **N10 `install/update --dry-run` honesty**: plans now enforce the same `TARGET_NOT_CONFIGURED` gate as real execution (previously a dry-run could report `ok: true` while the real install was refused), and dry-run index refreshes no longer write `skills-index.json` (`FetchIndexOptions.noCacheWrite`), keeping the "no writes" promise
+
 ## [3.2.1] - 2026-11-22
 
 Security & robustness hardening release (audit items S1–S5 / H1–H6 / M1–M10 / N1–N8). JSON envelopes only gain fields; no fields were removed.

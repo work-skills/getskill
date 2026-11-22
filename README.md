@@ -322,19 +322,19 @@ getskill search "pdf merge" --json     # 多词 AND 匹配；信封含 total/pag
 }
 ```
 
-| code                    | 含义                                                  |
-| ----------------------- | ----------------------------------------------------- |
-| `NETWORK_ERROR`         | 网络/站点不可用（无缓存可回退）、跨域技能包被拒       |
-| `SKILL_NOT_FOUND`       | 索引中不存在该技能（附 `suggestions` 相近名称建议）   |
-| `VERSION_NOT_AVAILABLE` | 站点仅提供最新版本，`--version` 指定的版本不可用      |
-| `TARGET_NOT_CONFIGURED` | 技能目录仅来自自动识别，需显式指定 agent/skills-dir   |
-| `STATE_LOCKED`          | 状态文件被其他进程占用（`state.json.lock`），稍后重试 |
-| `INVALID_ARGS`          | 未知命令/选项、参数缺失或非法数值、不安全技能名       |
-| `AMBIGUOUS_SKILL`       | 名称归一化后匹配多个不同技能，需使用完整 id           |
-| `EXTRACT_ERROR`         | 技能包解压失败（损坏/CRC 不符/超限/含符号链接）       |
-| `PACKAGE_INVALID`       | 技能包缺少技能 .md 文件，包无效                       |
-| `UNMANAGED_SKILL`       | 卸载目标无安装记录（手工技能），需 `--force` 确认     |
-| `UNKNOWN_ERROR`         | 其他未分类错误                                        |
+| code                    | 含义                                                           |
+| ----------------------- | -------------------------------------------------------------- |
+| `NETWORK_ERROR`         | 网络/站点不可用（无缓存可回退）、跨域技能包被拒                |
+| `SKILL_NOT_FOUND`       | 索引中不存在该技能（附 `suggestions` 相近名称建议）            |
+| `VERSION_NOT_AVAILABLE` | 站点仅提供最新版本，`--version` 指定的版本不可用               |
+| `TARGET_NOT_CONFIGURED` | 技能目录仅来自自动识别，需显式指定 agent/skills-dir            |
+| `STATE_LOCKED`          | 状态文件被其他进程占用（`state.json.lock`），稍后重试          |
+| `INVALID_ARGS`          | 未知命令/选项、参数缺失或非法数值、不安全技能名                |
+| `AMBIGUOUS_SKILL`       | 名称归一化后匹配多个不同技能，需使用完整 id                    |
+| `EXTRACT_ERROR`         | 技能包解压失败（损坏/CRC 不符/超限/含符号链接）                |
+| `PACKAGE_INVALID`       | 技能包缺少技能 .md 文件，包无效                                |
+| `UNMANAGED_SKILL`       | 目标目录无安装记录（手工技能）：卸载/覆盖安装需 `--force` 确认 |
+| `UNKNOWN_ERROR`         | 其他未分类错误                                                 |
 
 其他契约要点：
 
@@ -385,7 +385,8 @@ getskill 会下载并解压远程内容、删除本地目录，因此内置以�
 - **传输安全**：拒绝 HTTPS→HTTP 的降级重定向；非本机回环地址的明文 HTTP 下载会给出告警。响应体积上限：索引等文本 10MB，技能包下载 100MB。
 - **解压防护**：zip 单文件解压上限 20MB、总量 200MB（防解压炸弹，`inflateRawSync` 带 `maxOutputLength`）；逐条目 CRC32 校验；拒绝符号链接条目；条目路径段拒绝绝对路径、`..`、盘符/NTFS 备用数据流字符（`:`）、Windows 保留设备名（CON/NUL/COM1-9/LPT1-9）、控制字符与结尾点/空格。
 - **技能名校验**：install/update/uninstall/inspect 入口即拒绝不安全名称（`..`、`.`、`CON` 等，`INVALID_ARGS`）；安装/卸载目标路径必须严格位于技能目录下一层（纵深防御）。
-- **删除保护**：卸载无安装记录的手工技能目录默认拒绝（`UNMANAGED_SKILL`，需 `--force`）；state 记录中的解压路径（`repoPath`）只有位于缓存根目录或 `~/.getskill` 之内才允许删除。
+- **删除保护**：卸载无安装记录的手工技能目录默认拒绝（`UNMANAGED_SKILL`，需 `--force`）；install/update 覆盖无安装记录的手工目录同样默认拒绝（`--force` 确认）；state 记录中的解压路径（`repoPath`）只有严格位于缓存根目录或 `~/.getskill` 之内（不含根目录本身）才允许删除。
+- **传输与清理防护**：下载/请求的每一跳重定向都执行与索引同源的策略（防 302 绕过跨域拒绝）；文本响应按字节收集后统一 UTF-8 解码（防多字节字符跨 chunk 损坏）；`clean` 在缓存目录等于或包含技能目录时直接拒绝（防误删已安装技能）。
 - **状态文件健壮性**：`state.json` 原子写（tmp+rename）；损坏时告警并备份为 `state.json.corrupt-<时间戳>` 后按空状态继续；残留锁通过 rename 认领回收，避免并发互删。
 - **并发安全**：同技能并发安装使用唯一临时 zip/解压目录名，互不覆盖；「复制文件+写 state」整体持锁。
 - **重载命令**：仅执行用户显式配置的重载命令（Agent 预设或 `GETSKILL_RESTART_CMD`），默认 60 秒超时（`GETSKILL_RESTART_TIMEOUT_MS` 可调），输出捕获上限 1MB。

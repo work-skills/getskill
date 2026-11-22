@@ -24,6 +24,7 @@ import {
     normalizeCliSkillArgument,
     pruneInstallState,
     readInstallState,
+    recordMatchesCurrentSkillsDir,
     removeInstalledSkill,
     resolveLocalSkillName,
     updateInstallState,
@@ -205,6 +206,24 @@ function detectLocalModification(
     return modified;
 }
 
+/**
+ * S2（安装/更新侧）：无安装记录的手工技能目录默认拒绝覆盖，需 --force 显式确认。
+ * 与 uninstall 的 UNMANAGED_SKILL 保护对称，防止远端内容静默覆盖手工放置的技能。
+ */
+function assertManagedOrForced(
+    skillDir: string,
+    record: SkillStateRecord | undefined,
+    force: boolean | undefined
+): void {
+    const managed = Boolean(record && recordMatchesCurrentSkillsDir(record));
+    if (fs.existsSync(skillDir) && !managed && force !== true) {
+        throw new GetSkillError(
+            'UNMANAGED_SKILL',
+            `技能目录 ${skillDir} 已存在且不由 getskill 管理（无安装记录），为保护手工放置的内容已拒绝覆盖。确认覆盖请使用 --force，或先手动清理该目录`
+        );
+    }
+}
+
 /** 「复制技能文件 + 写 state」整体持锁，避免并发安装互相覆盖。 */
 async function installFromCache(
     canonicalName: string,
@@ -255,6 +274,7 @@ export async function downloadSkill(
     const canonicalName = resolveLocalSkillName(entry.id);
     const skillDir = path.join(getSkillsDirectory(), canonicalName);
     const record = readInstallState().skills[canonicalName];
+    assertManagedOrForced(skillDir, record, options.force);
 
     // 本地版本不低于站点版本时跳过（semver 比较，避免误降级）；
     // 显式 --version 时按精确版本判断，--force 强制重装。
@@ -336,6 +356,7 @@ export async function updateSkill(
     const skillDir = path.join(getSkillsDirectory(), canonicalName);
     const cachePath = path.join(getSkillsCacheDirectory(), canonicalName);
     const record = readInstallState().skills[canonicalName];
+    assertManagedOrForced(skillDir, record, options.force);
 
     // semver 比较：本地版本不低于站点版本即视为最新（不静默降级）；
     // 显式 --version 指定旧版本时才允许降级。

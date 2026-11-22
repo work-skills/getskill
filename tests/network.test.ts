@@ -1,16 +1,20 @@
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
+import type { AddressInfo } from 'net';
 
 import { getBaseUrl, refreshConfig } from '../lib/config';
 import {
     assertPackageUrlAllowed,
+    downloadFile,
     filterIndexByKeyword,
     getSkillPackageUrl,
     getSkillsIndexUrl,
     mapIndexEntryToSearchSkill,
     normalizeSkillIndexKey,
-    readCachedIndexEntries
+    readCachedIndexEntries,
+    request
 } from '../lib/network';
 import type { SkillIndexEntry } from '../lib/types';
 
@@ -162,6 +166,109 @@ describe('readCachedIndexEntries', () => {
             }
             refreshConfig();
             fs.rmSync(home, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('transport hardening (N9/H7)', () => {
+    const savedBaseUrl = process.env.GETSKILL_BASE_URL;
+    const savedAllowCrossOrigin = process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+    let indexServer: http.Server;
+    let evilServer: http.Server;
+    let base = '';
+    let evilBase = '';
+    const utf8Body = JSON.stringify({ note: '技能索引中文描述' });
+
+    beforeAll(async () => {
+        evilServer = http.createServer((_req, res) => {
+            res.end('EVIL-CROSS-ORIGIN-CONTENT');
+        });
+        await new Promise<void>((resolve) => {
+            evilServer.listen(0, '127.0.0.1', resolve);
+        });
+        evilBase = `http://127.0.0.1:${(evilServer.address() as AddressInfo).port}`;
+
+        indexServer = http.createServer((req, res) => {
+            if (req.url === '/data/skills.json') {
+                const buf = Buffer.from(utf8Body, 'utf8');
+                // 在多字节字符的续字节处切分，强制 UTF-8 跨 chunk
+                let split = -1;
+                for (let i = 1; i < buf.length; i += 1) {
+                    if ((buf[i] & 0xc0) === 0x80) {
+                        split = i;
+                        break;
+                    }
+                }
+                res.setHeader('content-type', 'application/json');
+                res.write(buf.subarray(0, split));
+                setTimeout(() => res.end(buf.subarray(split)), 20);
+                return;
+            }
+            if (req.url === '/skills/redirect.zip') {
+                res.statusCode = 302;
+                res.setHeader('location', `${evilBase}/evil.zip`);
+                res.end();
+                return;
+            }
+            res.statusCode = 404;
+            res.end('not found');
+        });
+        await new Promise<void>((resolve) => {
+            indexServer.listen(0, '127.0.0.1', resolve);
+        });
+        base = `http://127.0.0.1:${(indexServer.address() as AddressInfo).port}`;
+        process.env.GETSKILL_BASE_URL = base;
+        delete process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+        refreshConfig();
+    });
+
+    afterAll(async () => {
+        await new Promise((resolve) => indexServer.close(resolve));
+        await new Promise((resolve) => evilServer.close(resolve));
+        if (savedBaseUrl === undefined) {
+            delete process.env.GETSKILL_BASE_URL;
+        } else {
+            process.env.GETSKILL_BASE_URL = savedBaseUrl;
+        }
+        if (savedAllowCrossOrigin === undefined) {
+            delete process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+        } else {
+            process.env.GETSKILL_ALLOW_CROSS_ORIGIN = savedAllowCrossOrigin;
+        }
+        refreshConfig();
+    });
+
+    it('decodes multi-byte utf-8 across chunk boundaries (N9)', async () => {
+        const resp = await request(`${base}/data/skills.json`);
+        expect(resp.body).toBe(utf8Body);
+        expect(resp.body).not.toContain('\uFFFD');
+    });
+
+    it('refuses cross-origin redirects for downloads (H7)', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'getskill-redir-'));
+        const dest = path.join(dir, 'pkg.zip');
+        try {
+            await expect(
+                downloadFile(`${base}/skills/redirect.zip`, dest)
+            ).rejects.toThrow(/cross-origin/i);
+            expect(fs.existsSync(dest)).toBe(false);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('allows cross-origin redirects with explicit opt-in', async () => {
+        process.env.GETSKILL_ALLOW_CROSS_ORIGIN = '1';
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'getskill-redir-'));
+        const dest = path.join(dir, 'pkg.zip');
+        try {
+            await downloadFile(`${base}/skills/redirect.zip`, dest);
+            expect(fs.readFileSync(dest, 'utf8')).toBe(
+                'EVIL-CROSS-ORIGIN-CONTENT'
+            );
+        } finally {
+            delete process.env.GETSKILL_ALLOW_CROSS_ORIGIN;
+            fs.rmSync(dir, { recursive: true, force: true });
         }
     });
 });

@@ -153,7 +153,7 @@ done
 ```bash
 # 第 0 步: 一次 status 完成前置检查（门禁/目录/索引缓存/已装技能/失效记录/锁）
 $ getskill status --json
-{ "command": "status", "cli_version": "3.2.1", "agent": "claude", "skills_dir": "~/.claude/skills",
+{ "command": "status", "cli_version": "3.3.0", "agent": "claude", "skills_dir": "~/.claude/skills",
   "explicit_target": true, "index": { "exists": true, "fetched_at": "…", "skill_count": 5459, "stale": false },
   "installed": { "count": 1, "skills": [ { "name": "pdf-toolkit", "version": "1.0.0", "managed": true, ... } ] },
   "stale_records": [], "state_locked": false, "lock_pid": null, "lock_stale": false }

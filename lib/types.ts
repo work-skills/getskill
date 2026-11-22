@@ -102,6 +102,8 @@ export interface InstalledSkillSnapshot {
 export interface FetchIndexOptions {
     /** 忽略缓存 TTL 强制刷新（每进程最多触发一次下载）。 */
     forceRefresh?: boolean;
+    /** 只读模式：下载后不落盘索引缓存（--dry-run 预演使用）。 */
+    noCacheWrite?: boolean;
 }
 
 export interface SkillStateRecord {

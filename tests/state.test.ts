@@ -256,6 +256,40 @@ describe('uninstall safety (S1/S2/S3)', () => {
         }
     });
 
+    it('never deletes repoPath equal to the home or cache root (S3 strict)', () => {
+        const { home, skillsDir } = useTempEnv();
+        try {
+            fs.writeFileSync(path.join(home, 'config.json'), '{}');
+            const cacheRoot = getSkillsCacheDirectory();
+            fs.mkdirSync(cacheRoot, { recursive: true });
+            fs.writeFileSync(path.join(cacheRoot, 'marker.txt'), 'keep');
+
+            const skillDir = path.join(skillsDir, 'root-tamper');
+            fs.mkdirSync(skillDir, { recursive: true });
+            const record = makeRecord('root-tamper', skillDir, skillsDir);
+            record.repoPath = home;
+            writeInstallState({ skills: { 'root-tamper': record } });
+
+            const removed = removeInstalledSkill('root-tamper');
+            expect(removed.removedInstall).toBe(true);
+            expect(fs.existsSync(path.join(home, 'config.json'))).toBe(true);
+
+            const skillDir2 = path.join(skillsDir, 'cache-tamper');
+            fs.mkdirSync(skillDir2, { recursive: true });
+            const record2 = makeRecord('cache-tamper', skillDir2, skillsDir);
+            record2.repoPath = cacheRoot;
+            writeInstallState({ skills: { 'cache-tamper': record2 } });
+
+            const removed2 = removeInstalledSkill('cache-tamper');
+            expect(removed2.removedInstall).toBe(true);
+            expect(fs.existsSync(path.join(cacheRoot, 'marker.txt'))).toBe(
+                true
+            );
+        } finally {
+            restoreEnv(home);
+        }
+    });
+
     it('rejects traversal names before touching the filesystem (S1)', () => {
         const { home } = useTempEnv();
         try {

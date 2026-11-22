@@ -31,6 +31,24 @@ import type {
 
 export { normalizeSkillIndexKey } from './state';
 
+/**
+ * H7：重定向目标同样必须满足与索引源的同源策略，
+ * 防止恶意/被篡改的服务器用 302 跳转绕过 assertPackageUrlAllowed 的跨域拒绝。
+ * GETSKILL_ALLOW_CROSS_ORIGIN=1 时与直连下载一样放行。
+ */
+function assertRedirectOriginAllowed(newUrl: string): void {
+    const target = new URL(newUrl);
+    const base = new URL(getBaseUrl());
+    if (
+        target.origin !== base.origin &&
+        process.env.GETSKILL_ALLOW_CROSS_ORIGIN !== '1'
+    ) {
+        throw new Error(
+            `Refusing cross-origin redirect (${target.origin}, index origin ${base.origin}); set GETSKILL_ALLOW_CROSS_ORIGIN=1 to allow`
+        );
+    }
+}
+
 export function request(
     url: string,
     options: RequestOptions = {},
@@ -104,6 +122,15 @@ export function request(
                     return;
                 }
 
+                // H7：重定向目标也执行同源策略，防 302 绕过跨域拒绝
+                try {
+                    assertRedirectOriginAllowed(newUrl);
+                } catch (error) {
+                    res.resume();
+                    reject(error);
+                    return;
+                }
+
                 res.resume();
                 request(newUrl, options, redirectCount + 1)
                     .then(resolve)
@@ -111,11 +138,12 @@ export function request(
                 return;
             }
 
-            let data = '';
+            const chunks: Buffer[] = [];
             let receivedBytes = 0;
 
             res.on('data', (chunk: Buffer | string) => {
-                receivedBytes += Buffer.byteLength(chunk);
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                receivedBytes += buf.length;
                 // H5：文本响应体积上限，防异常/恶意服务器耗尽内存
                 if (receivedBytes > MAX_INDEX_RESPONSE_BYTES) {
                     res.destroy();
@@ -126,10 +154,12 @@ export function request(
                     );
                     return;
                 }
-                data += chunk.toString();
+                chunks.push(buf);
             });
 
             res.on('end', () => {
+                // H7：按字节收集后统一解码，避免多字节 UTF-8 字符被 chunk 边界截断
+                const data = Buffer.concat(chunks).toString('utf8');
                 if (
                     (statusCode >= 200 && statusCode < 300) ||
                     options.allowNonSuccessStatus
@@ -250,6 +280,14 @@ export function downloadFile(
                             `Refusing HTTPS to HTTP downgrade redirect: ${newUrl}`
                         )
                     );
+                    return;
+                }
+
+                // H7：重定向目标也执行同源策略，防 302 绕过跨域拒绝
+                try {
+                    assertRedirectOriginAllowed(newUrl);
+                } catch (error) {
+                    reject(error);
                     return;
                 }
 
@@ -553,7 +591,10 @@ export async function fetchSkillsIndex(
 
     try {
         const skills = await downloadSkillsIndex();
-        writeSkillsIndexCache(skills);
+        // --dry-run 预演承诺“不写任何文件”，只读模式下不落盘缓存
+        if (options.noCacheWrite !== true) {
+            writeSkillsIndexCache(skills);
+        }
         indexDownloadedInProcess = true;
         lastIndexMeta = {
             fetched_at: new Date().toISOString(),

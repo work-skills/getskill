@@ -93,7 +93,7 @@ getskill clean --keep-index --json # 清理缓存但保留索引缓存
 | `AMBIGUOUS_SKILL`       | 名称归一化后匹配多个技能；改用完整 id 重试                            |
 | `EXTRACT_ERROR`         | 技能包解压失败（损坏/CRC 不符/超限/含符号链接）；换网络重试或反馈站点 |
 | `PACKAGE_INVALID`       | 技能包缺少技能 .md 文件；该包无效，反馈站点                           |
-| `UNMANAGED_SKILL`       | 目标目录无安装记录（手工技能）；确认要删时加 `--force`                |
+| `UNMANAGED_SKILL`       | 目标目录无安装记录（手工技能）；确认要删/覆盖时加 `--force`           |
 
 ## 注意
 
