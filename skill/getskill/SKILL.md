@@ -17,7 +17,7 @@ description: 通过 getskill CLI 从 getskill.work 技能注册表搜索、预�
 getskill status --json
 ```
 
-返回 `explicit_target`（安装门禁是否满足）、`skills_dir`、`index`（缓存年龄/是否过期）、
+返回 `explicit_target`（安装门禁是否满足）、`skills_dir`、`index`（缓存年龄/是否过期/内容哈希）、
 `installed`（已装技能+版本+managed）、`stale_records`（目录被手动删的记录）、`state_locked`、
 `cli_version`、`lock_pid`/`lock_stale`（状态锁占用进程与是否疑似残留）。
 若 `explicit_target=false`，先执行其一（否则 install/update/uninstall 报 `TARGET_NOT_CONFIGURED`）：
@@ -51,7 +51,7 @@ getskill config set skills-dir <技能目录>                       # 任意目�
    `reload_command`/`reloaded`（是否已自动重载宿主）、`local_modified`（覆盖了本地改动时为 true）、
    `warnings[]`（跳过符号链接/超大文件、包体积与索引不一致等非致命警告，需检查）。
    **按 `next_step` 阅读 `skill_md_path` 并照做**；技能名称大小写不敏感，信封回显规范 id。
-   索引缓存可能滞后时用 `getskill install <名称> --refresh --json` 强制刷新后再解析。
+   索引每次访问都会按站点 manifest 哈希校验，正常不会滞后；无 manifest 的旧式源可用 `getskill install <名称> --refresh --json` 强制刷新。
 
 4. **批量**：`getskill install a b c --json` / `update a b --json` / `uninstall a b --json`
    返回 `{ total, succeeded, failed, results[] }`，部分失败时退出码非零，逐项检查 `ok`。
@@ -100,6 +100,6 @@ getskill clean --keep-index --json # 清理缓存但保留索引缓存
 
 - 布尔开关（`--json` `--force` `--all` `--prune` `--brief` `--keep-cache` `--dry-run` `--keep-index` `--refresh`）可放在任意位置；`--` 之后全部视为位置参数。重复选项以最后一次为准（stderr 有告警）。
 - `-V <tag>` 是技能版本；`-v`/`--version` 是 CLI 版本。网络超时可用 `--timeout <ms>` 调整（默认 60000）。
-- 索引缓存 TTL 1 天；`update` 会强制刷新（install 可加 `--refresh`）；离线时搜索回退旧缓存（信封 `index.stale=true`）。
+- 索引缓存按站点 `manifest.json` 内容哈希校验：哈希一致不重复下载（无 1 天过期），哈希变化才下载新索引；manifest 不可达时回退旧缓存（信封 `index.stale=true`）。无 manifest 的旧式源保留 TTL 1 天，`update`/`--refresh` 强制刷新。
 - install/update 不会静默降级：本地版本更高时视为最新；确需旧版本用显式 `--version`。非 semver 版本（如 unknown）视为低于任何正式版本，会触发一次更新。
 - 安全边界：技能包默认仅允许与索引同源下载，每一跳重定向同样校验（信任跨域源时设 `GETSKILL_ALLOW_CROSS_ORIGIN=1`）；拒绝 HTTPS→HTTP 降级重定向；zip 解压限额单文件 20MB/总量 200MB，校验 CRC 并拒绝符号链接；技能名禁止 `..`/盘符/保留设备名等不安全字符。

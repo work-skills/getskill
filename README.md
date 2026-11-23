@@ -6,7 +6,7 @@ AI Agent 技能管理工具 - 从 getskill.work 搜索、下载和更新技能�
 
 - 🔍 从 `getskill.work` 静态技能索引（`data/skills.json`）搜索技能，支持 `--json` 输出与 `--limit/--page/--brief`
 - 🗂️ `getskill index` 紧凑浏览完整索引（分类统计 / 分类列表），`getskill show` 安装前预览 SKILL.md
-- ⚡ 索引本地缓存（TTL 1 天）：搜索优先读本地缓存，过期自动刷新，下载失败回退旧缓存（离线可搜索）
+- ⚡ 索引本地缓存（manifest 哈希校验）：每次访问先取站点 `manifest.json`（约 1KB）比对哈希，一致则直接用本地缓存、不重复下载；哈希变化才下载新索引；manifest 不可达时回退旧缓存（离线可搜索）
 - 🧠 搜索结果标注本地安装状态（`installed` / `installed_version` / `suggested_action`，semver 比较不会误降级），版本不低于站点时 `install` 自动跳过下载（`--force` 可强制重装）
 - 🤝 面向 Agent 的 JSON 契约：**所有命令**支持 `--json` 结果信封（含 `status` 一次前置检查、`--dry-run` 预演、批量操作、`next_step` 生效指引）；出错输出 `error.code`（如 `NETWORK_ERROR` / `SKILL_NOT_FOUND` / `INVALID_ARGS`）并非零退出，未知命令/选项不再静默成功
 - 📥 通过 HTTPS 直接下载技能 ZIP 包并在本地解压安装（同源策略、解压限额、CRC 校验、符号链接拒绝，见「安全边界」）
@@ -131,7 +131,7 @@ getskill search <关键词> --json --brief               # 简介截断到约 12
     3. Agent 决定后自行运行 `getskill install <名称>`（未安装）或 `getskill update <名称>`（已装但版本落后）；同版本已装或不匹配时不执行任何命令。
 - 关键词没有匹配到技能时，会明确返回"未找到匹配的技能"，并提示 Agent 用 `getskill index --categories` / `getskill index --category <分类> --json` 紧凑浏览完整索引挑选合适的技能再安装（索引可达数千条，不要直接读取原始索引文件）；`--json` 在 `count: 0` 时附加 `message` / `hint` / `index_url` 字段，本地索引文件存在时附加 `index_file`。
 - **搜索失败与无结果可区分**：网络/站点不可用且无本地缓存时，`search` 抛出 `NETWORK_ERROR`（`--json` 输出 `error.code` 并非零退出），不会伪装成"无匹配"；有过期缓存时仍回退离线搜索。
-- 索引缓存在 `<cache-dir>/skills-index.json`（默认 `~/.getskill/cache/skills-index.json`）。缓存时间在 1 天内时直接在本地搜索，超过 1 天自动重新下载；下载失败时回退到旧缓存，离线也能搜索。`getskill update` 会强制刷新缓存，`getskill clean` 会将其清除。
+- 索引缓存在 `<cache-dir>/skills-index.json`（默认 `~/.getskill/cache/skills-index.json`）。每次搜索先获取站点 `manifest.json`，将其内容哈希与缓存记录的哈希比对：**哈希一致直接在本地搜索（不再按时间过期），哈希变化才重新下载**。manifest 不可达或下载失败时回退到旧缓存，离线也能搜索。站点未提供 `manifest.json` 时（自定义索引源）回退旧式 TTL 1 天逻辑。`getskill clean` 会清除缓存。
 - 每条搜索结果附带本地安装状态（文本输出的“本地: …”行，`--json` 中的字段），供 Agent 决策参考：
     - `installed` / `installed_version`：是否已安装到当前 Agent 的技能目录及其版本；
     - `suggested_action`：`skip` = 本地版本不低于站点版本（semver 比较），无需重复安装；`update` = 站点有更新版本，可按需 `getskill update <名称>`；`install` = 未安装，可按需 `getskill install <名称>`。
@@ -200,7 +200,7 @@ getskill install pdf-toolkit
 # 强制重装（忽略“同版本已安装”的跳过逻辑；也用于确认覆盖无安装记录的手工目录）
 getskill install pdf-toolkit --force
 
-# 强制刷新技能索引缓存后再解析（索引缓存滞后、站点刚更新时使用）
+# 显式要求刷新索引（哈希模式下每次访问本就会校验；此开关主要服务于无 manifest 的旧式源）
 getskill install pdf-toolkit --refresh
 
 # 只读预演：不下载 ZIP、不写任何文件（包括索引缓存），门禁与真实安装一致
@@ -230,7 +230,7 @@ getskill update --all --prune
 更新逻辑：
 
 1. 读取本地已安装技能的版本记录（仅统计属于当前技能目录的记录）
-2. 强制刷新技能索引缓存，拉取远端最新版本号（`update --all` 每进程只刷新一次）
+2. 校验站点 manifest 哈希，哈希变化时重新下载索引（哈希一致直接用本地缓存，不重复下载）
 3. 版本一致时提示“已是最新版本”；不一致时重新下载 ZIP 并覆盖安装
 4. 与 install 相同，覆盖**无安装记录**的手工目录默认拒绝（`UNMANAGED_SKILL`），需 `--force` 确认；`update --dry-run` 会如实预演该保护（`action: "blocked"`、`ok: false`、非零退出）
 5. 索引中已不存在的技能会被标记为“已跳过”，不算失败；加 `--prune` 可清理这些失效记录
@@ -301,7 +301,7 @@ getskill status --json                 # 一次返回门禁/目录/索引缓存/
 getskill install pdf-toolkit --json
 # { "command": "install", "status": "installed" | "skipped", "skill": "<规范 id>",
 #   "version": "...", "up_to_date": false, "install_dir": "...", "files": [...],
-#   "local_modified": false, "warnings": [], "index": { "fetched_at", "source", "stale" },
+#   "local_modified": false, "warnings": [], "index": { "fetched_at", "source", "stale", "hash" },
 #   "skill_md_path": "...", "next_step": "...", "reload_command": null, "reloaded": null }
 
 getskill install a b c --json          # 批量: { command, total, succeeded, failed, results: [...] }
@@ -479,7 +479,7 @@ $env:GETSKILL_SKILLS_DIR = "$HOME\.my-agent\skills"; getskill install pdf-toolki
 ├── config.json          # 持久化配置
 ├── state.json           # 安装记录（技能名、版本、安装目录）
 └── cache/
-    ├── skills-index.json # 技能索引缓存（TTL 1 天）
+    ├── skills-index.json # 技能索引缓存（manifest 哈希校验）
     └── pdf-toolkit/      # ZIP 解压后的技能包内容
 
 ~/.claude/skills/        # 当前 Agent 的技能目录（随 agent/skills-dir 配置变化）

@@ -153,8 +153,8 @@ done
 ```bash
 # 第 0 步: 一次 status 完成前置检查（门禁/目录/索引缓存/已装技能/失效记录/锁）
 $ getskill status --json
-{ "command": "status", "cli_version": "3.3.1", "agent": "claude", "skills_dir": "~/.claude/skills",
-  "explicit_target": true, "index": { "exists": true, "fetched_at": "…", "skill_count": 5459, "stale": false },
+{ "command": "status", "cli_version": "3.4.0", "agent": "claude", "skills_dir": "~/.claude/skills",
+  "explicit_target": true, "index": { "exists": true, "fetched_at": "…", "skill_count": 5459, "stale": false, "hash": "5f92b8859c73" },
   "installed": { "count": 1, "skills": [ { "name": "pdf-toolkit", "version": "1.0.0", "managed": true, ... } ] },
   "stale_records": [], "state_locked": false, "lock_pid": null, "lock_stale": false }
 
@@ -185,7 +185,7 @@ $ getskill install pdf-toolkit --json
   "reload_command": null, "reloaded": null }
 
 # warnings[] 是非致命警告（跳过符号链接/超大文件、包体积与索引声明不一致等），Agent 应检查
-# 索引缓存滞后、站点刚更新时，用 --refresh 强制刷新索引后再解析
+# 显式要求刷新索引（哈希模式下每次访问本就会校验；此开关主要服务于无 manifest 的旧式源）
 $ getskill install pdf-toolkit --refresh --json
 
 $ getskill install pdf-toolkit --json
@@ -361,7 +361,7 @@ $ getskill --skills-dir ~/.my-agent/skills install pdf-toolkit
 # 删除配置项，恢复自动识别/默认值
 $ getskill config unset agent
 
-# 自定义索引地址（需要同样提供 /data/skills.json 与 /skills/<id>.zip）
+# 自定义索引地址（需要同样提供 /data/skills.json 与 /skills/<id>.zip；提供 /manifest.json 可启用哈希增量刷新）
 $ getskill config set base-url https://custom-index.example.com
 
 # 通过环境变量临时覆盖

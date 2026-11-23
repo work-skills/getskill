@@ -102,7 +102,7 @@ export function printHelp(): void {
         '  getskill install <技能名称> --force - 强制重装（同版本默认跳过；也用于确认覆盖无安装记录的手工目录）'
     );
     console.log(
-        '  getskill install/update <技能名称> --refresh - 强制刷新技能索引缓存后再解析'
+        '  getskill install/update <技能名称> --refresh - 显式刷新索引（哈希一致时不重复下载）'
     );
     console.log('  getskill update <技能名称>    - 检查在线版本并更新技能');
     console.log(
@@ -1975,7 +1975,8 @@ export async function cli(): Promise<void> {
                           exists: false,
                           fetched_at: null,
                           skill_count: 0,
-                          stale: true
+                          stale: true,
+                          hash: null
                       };
 
                 if (json) {
@@ -2009,7 +2010,7 @@ export async function cli(): Promise<void> {
                     `安装门禁: ${config.sources.skillsDir !== 'detect' ? '已显式指定，可安装/卸载' : '仅自动识别，安装/卸载会被拒绝（先 config set agent 或 skills-dir）'}`
                 );
                 console.log(
-                    `索引缓存: ${cacheInfo ? `${cacheInfo.skill_count} 个技能，抓取于 ${cacheInfo.fetched_at}${cacheInfo.stale ? '（已过期）' : ''}` : '不存在（首次 search/index 时下载）'}`
+                    `索引缓存: ${cacheInfo ? `${cacheInfo.skill_count} 个技能，抓取于 ${cacheInfo.fetched_at}${cacheInfo.hash ? `，哈希 ${cacheInfo.hash}` : ''}${cacheInfo.stale ? '（已过期）' : ''}` : '不存在（首次 search/index 时下载）'}`
                 );
                 console.log(`已安装技能: ${skills.length} 个`);
                 skills.forEach((skill) => {

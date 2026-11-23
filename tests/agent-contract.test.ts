@@ -2,6 +2,7 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { spawn } from 'child_process';
 import type { AddressInfo } from 'net';
 
@@ -281,6 +282,20 @@ describe('agent contract behaviors (local server)', () => {
             'SKILL.md': '# PDF Extract\n\nExtract text from PDF files.'
         });
         server = http.createServer((req, res) => {
+            if (req.url === '/manifest.json') {
+                res.setHeader('content-type', 'application/json');
+                res.end(
+                    JSON.stringify({
+                        hash: crypto
+                            .createHash('sha1')
+                            .update(JSON.stringify(entries))
+                            .digest('hex')
+                            .slice(0, 12),
+                        skills: '/data/skills.json'
+                    })
+                );
+                return;
+            }
             if (req.url === '/data/skills.json') {
                 res.setHeader('content-type', 'application/json');
                 res.end(JSON.stringify({ skills: entries }));

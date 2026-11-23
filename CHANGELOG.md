@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.0] - 2026-11-23
+
+### Changed
+
+- **Hash-based index freshness (replaces the 1-day TTL on getskill.work)**: `fetchSkillsIndex` now probes `<base-url>/manifest.json` (~1KB, ≤5s timeout) on every access and compares its `hash` with the cached index hash — matching hashes reuse the local cache without re-downloading (regardless of cache age, and even with `forceRefresh` / `update` / `--refresh`); a changed hash downloads the versioned index path advertised by the manifest (`/v/<hash>/skills.json`, with a one-shot fallback to `/data/skills.json` on 404/410). The cache file now records `hash`
+- **Graceful degradation**: sources without `manifest.json` (404/invalid payload) keep the legacy 1-day TTL flow; when the manifest is unreachable and a cache exists, the stale cache is served immediately (offline search stays fast); a failed index download still falls back to the stale cache
+
+### Added
+
+- `index.hash` in JSON envelopes (search/index/show/install/update) and in `status --json` index info; `status` text output shows the cached hash
+
+### Tests
+
+- 135 unit tests (was 131): manifest hash match/change, `forceRefresh` under hash mode, legacy TTL fallback, unreachable-manifest offline fallback; live-smoke `--refresh` check now accepts hash-verified cache hits
+
 ## [3.3.1] - 2026-11-22
 
 ### Fixed

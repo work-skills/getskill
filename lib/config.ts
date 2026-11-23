@@ -8,6 +8,8 @@ import { ensureDirectoryExists } from './system';
 export const DEFAULT_BASE_URL = 'https://getskill.work';
 export const REQUEST_TIMEOUT_MS = 60_000;
 export const SKILLS_INDEX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/** manifest.json 探测超时上限：文件极小，离线时不应让用户等待完整网络超时。 */
+export const INDEX_MANIFEST_TIMEOUT_MS = 5_000;
 export const MAX_COPY_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 /** zip 单文件解压上限（防解压炸弹）。 */
 export const MAX_ZIP_ENTRY_BYTES = 20 * 1024 * 1024;

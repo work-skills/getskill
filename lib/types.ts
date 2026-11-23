@@ -80,6 +80,8 @@ export interface SkillsIndexMeta {
     fetched_at: string | null;
     source: 'remote' | 'cache' | 'stale-cache' | 'none';
     stale: boolean;
+    /** 站点 manifest.json 的内容哈希；哈希一致即索引最新（无 manifest 的旧式源为 null）。 */
+    hash: string | null;
 }
 
 /** list 命令的本地技能明细（目录扫描 + state 合并）。 */
@@ -100,7 +102,7 @@ export interface InstalledSkillSnapshot {
 }
 
 export interface FetchIndexOptions {
-    /** 忽略缓存 TTL 强制刷新（每进程最多触发一次下载）。 */
+    /** 强制刷新：站点提供 manifest.json 时按哈希判断（哈希一致仍不下载）；无 manifest 的旧式源忽略缓存 TTL（每进程最多触发一次下载）。 */
     forceRefresh?: boolean;
     /** 只读模式：下载后不落盘索引缓存（--dry-run 预演使用）。 */
     noCacheWrite?: boolean;
@@ -145,7 +147,7 @@ export interface DownloadOptions {
     version?: string;
     /** 同版本已安装时仍强制重新下载安装。 */
     force?: boolean;
-    /** 强制刷新技能索引缓存后再解析技能（install --refresh）。 */
+    /** 显式刷新索引后再解析技能（install --refresh）；站点提供 manifest 时按哈希判断，哈希一致不重复下载。 */
     refresh?: boolean;
 }
 

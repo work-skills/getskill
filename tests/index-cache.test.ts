@@ -2,6 +2,7 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import type { AddressInfo } from 'net';
 
 import {
@@ -14,6 +15,7 @@ import {
     fetchSkillMarkdown,
     fetchSkillsIndex,
     getSkillsIndexCacheFilePath,
+    getSkillsIndexMeta,
     searchSkills
 } from '../lib/network';
 import {
@@ -32,6 +34,17 @@ let indexHits = 0;
 let zipHits = 0;
 let failIndex = false;
 let entries: SkillIndexEntry[] = [];
+/** manifest 模拟：on=正常提供哈希；off=404（旧式源回退 TTL）；fail=500（网络不可达）。 */
+let manifestMode: 'on' | 'off' | 'fail' = 'on';
+let manifestHits = 0;
+
+function currentHash(): string {
+    return crypto
+        .createHash('sha1')
+        .update(JSON.stringify(entries))
+        .digest('hex')
+        .slice(0, 12);
+}
 
 function makeEntry(overrides: Partial<SkillIndexEntry> = {}): SkillIndexEntry {
     return {
@@ -95,7 +108,32 @@ function expireIndexCache(): void {
 describe('skills index local cache', () => {
     beforeAll(async () => {
         server = http.createServer((req, res) => {
-            if (req.url === '/data/skills.json') {
+            if (req.url === '/manifest.json') {
+                manifestHits += 1;
+                if (manifestMode === 'off') {
+                    res.statusCode = 404;
+                    res.end('not found');
+                    return;
+                }
+                if (manifestMode === 'fail') {
+                    res.statusCode = 500;
+                    res.end('manifest unavailable');
+                    return;
+                }
+                res.setHeader('content-type', 'application/json');
+                res.end(
+                    JSON.stringify({
+                        hash: currentHash(),
+                        skills: `/v/${currentHash()}/skills.json`
+                    })
+                );
+                return;
+            }
+
+            if (
+                req.url === '/data/skills.json' ||
+                /^\/v\/[0-9a-f]+\/skills\.json$/.test(req.url || '')
+            ) {
                 indexHits += 1;
                 if (failIndex) {
                     res.statusCode = 500;
@@ -132,6 +170,8 @@ describe('skills index local cache', () => {
         indexHits = 0;
         zipHits = 0;
         failIndex = false;
+        manifestMode = 'on';
+        manifestHits = 0;
         entries = [makeEntry()];
     });
 
@@ -141,7 +181,7 @@ describe('skills index local cache', () => {
         refreshConfig();
     });
 
-    it('downloads once and searches the local cache within one day', async () => {
+    it('downloads once and reuses the cache while the manifest hash matches', async () => {
         useTempEnv();
 
         const first = await fetchSkillsIndex();
@@ -152,22 +192,55 @@ describe('skills index local cache', () => {
         const second = await fetchSkillsIndex();
         expect(second.map((entry) => entry.id)).toEqual(['pdf-extract']);
         expect(indexHits).toBe(1);
+        expect(manifestHits).toBe(2);
+        expect(getSkillsIndexMeta()).toMatchObject({
+            source: 'cache',
+            stale: false,
+            hash: currentHash()
+        });
     });
 
-    it('re-downloads when the cache is older than one day', async () => {
+    it('re-downloads when the manifest hash changes', async () => {
         useTempEnv();
 
         await fetchSkillsIndex();
-        expireIndexCache();
         entries = [makeEntry({ version: '2.0.0' })];
 
         const refreshed = await fetchSkillsIndex();
         expect(indexHits).toBe(2);
         expect(refreshed[0].version).toBe('2.0.0');
+        expect(getSkillsIndexMeta().hash).toBe(currentHash());
     });
 
-    it('forceRefresh bypasses a fresh cache once per process', async () => {
+    it('keeps an old cache when the hash matches (no TTL expiry)', async () => {
         useTempEnv();
+
+        await fetchSkillsIndex();
+        expireIndexCache();
+
+        const result = await fetchSkillsIndex();
+        expect(indexHits).toBe(1);
+        expect(result.map((entry) => entry.id)).toEqual(['pdf-extract']);
+        expect(getSkillsIndexMeta()).toMatchObject({
+            source: 'cache',
+            stale: false
+        });
+    });
+
+    it('forceRefresh does not re-download when the hash matches', async () => {
+        useTempEnv();
+
+        await fetchSkillsIndex();
+        expect(indexHits).toBe(1);
+
+        await fetchSkillsIndex({ forceRefresh: true });
+        expect(indexHits).toBe(1);
+        expect(getSkillsIndexMeta().source).toBe('cache');
+    });
+
+    it('forceRefresh bypasses a fresh cache once per process on legacy sources', async () => {
+        useTempEnv();
+        manifestMode = 'off';
 
         await fetchSkillsIndex();
         expect(indexHits).toBe(1);
@@ -198,16 +271,52 @@ describe('skills index local cache', () => {
         expect(indexHits).toBe(2);
     });
 
+    it('legacy sources without a manifest still use the 1-day TTL', async () => {
+        useTempEnv();
+        manifestMode = 'off';
+
+        await fetchSkillsIndex();
+        await fetchSkillsIndex();
+        expect(indexHits).toBe(1);
+
+        expireIndexCache();
+        entries = [makeEntry({ version: '2.0.0' })];
+
+        const refreshed = await fetchSkillsIndex();
+        expect(indexHits).toBe(2);
+        expect(refreshed[0].version).toBe('2.0.0');
+        expect(getSkillsIndexMeta().hash).toBeNull();
+    });
+
     it('falls back to the stale cache when the download fails', async () => {
         useTempEnv();
 
         await fetchSkillsIndex();
-        expireIndexCache();
+        entries = [makeEntry({ version: '2.0.0' })];
         failIndex = true;
 
         const result = await fetchSkillsIndex();
         expect(indexHits).toBe(2);
         expect(result.map((entry) => entry.id)).toEqual(['pdf-extract']);
+        expect(getSkillsIndexMeta()).toMatchObject({
+            source: 'stale-cache',
+            stale: true
+        });
+    });
+
+    it('uses the cache without downloading when the manifest is unreachable', async () => {
+        useTempEnv();
+
+        await fetchSkillsIndex();
+        manifestMode = 'fail';
+
+        const result = await fetchSkillsIndex();
+        expect(indexHits).toBe(1);
+        expect(result.map((entry) => entry.id)).toEqual(['pdf-extract']);
+        expect(getSkillsIndexMeta()).toMatchObject({
+            source: 'stale-cache',
+            stale: true
+        });
     });
 
     it('ignores a cache written for a different base url', async () => {
@@ -322,11 +431,12 @@ describe('skills index local cache', () => {
     it('search still works offline via stale cache instead of throwing', async () => {
         useTempEnv();
         await fetchSkillsIndex();
-        expireIndexCache();
+        manifestMode = 'fail';
         failIndex = true;
 
         const results = await searchSkills('pdf');
         expect(results).toHaveLength(1);
+        expect(indexHits).toBe(1);
     });
 
     it('search throws INVALID_ARGS for an empty keyword', async () => {

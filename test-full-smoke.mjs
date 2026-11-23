@@ -362,11 +362,16 @@ async function main() {
         assert(Array.isArray(r.json.warnings), 'warnings[] 缺失（N2）');
         installedVersion = r.json.version;
     });
-    await t('install --refresh 强制刷新索引后仍正确跳过', async () => {
+    await t('install --refresh 校验索引哈希后仍正确跳过', async () => {
         const r = await run(['install', SKILL, '--refresh', '--json']);
         eq(r.code, 0, 'exit');
         eq(r.json.status, 'skipped', 'status');
-        eq(r.json.index.source, 'remote', 'refresh 应触发远端刷新');
+        // 哈希一致时 refresh 不再重复下载（source=cache）；站点更新后才为 remote
+        assert(
+            ['remote', 'cache'].includes(r.json.index.source),
+            'refresh 应校验远端哈希'
+        );
+        assert(r.json.index.hash, 'index.hash 缺失（manifest 哈希）');
     });
     await t('install 近似名 → SKILL_NOT_FOUND + suggestions', async () => {
         const typo = SKILL.slice(0, -1);

@@ -53,8 +53,8 @@
 
 - HTTP/HTTPS request wrapper with redirect + timeout handling (timeout from `getRequestTimeoutMs`); refuses HTTPS→HTTP downgrade redirects; response size caps (10MB text / 100MB download)
 - Static index loading, multi-token AND filtering (`matchIndexEntries`), and package URL helpers; `assertPackageUrlAllowed` enforces same-origin package downloads (`GETSKILL_ALLOW_CROSS_ORIGIN=1` opt-out) and warns on plain-HTTP non-loopback downloads — called at download time only, search/show URL display is unaffected
-- Local index cache (`<cache-dir>/skills-index.json`, TTL 1 day, atomic tmp+rename writes): searches read the cache first; stale caches are re-downloaded, and a failed download falls back to the stale cache for offline use. `update` forces one refresh per process (`forceRefresh`)
-- `getSkillsIndexMeta` / `peekSkillsIndexCache` / `readCachedIndexEntries`: index freshness (`fetched_at` / `source` / `stale`) for JSON envelopes and the `status` command; cached entries power offline did-you-mean suggestions
+- Local index cache (`<cache-dir>/skills-index.json`, atomic tmp+rename writes, records the manifest `hash`): `fetchSkillsIndex` first probes `<base>/manifest.json` (~1KB, ≤5s timeout). A matching hash reuses the cache without downloading (regardless of age or `forceRefresh`); a changed hash downloads the versioned index path from the manifest (one-shot fallback to `/data/skills.json` on 404/410). Sources without a manifest keep the legacy 1-day TTL flow; an unreachable manifest with an existing cache serves the stale cache immediately (offline use)
+- `getSkillsIndexMeta` / `peekSkillsIndexCache` / `readCachedIndexEntries`: index freshness (`fetched_at` / `source` / `stale` / `hash`) for JSON envelopes and the `status` command; cached entries power offline did-you-mean suggestions
 - `searchSkillsPage` returns results plus `total` / `page` / `limit` / `has_more`; results annotated with local install state (`installed`, `installed_version`, `suggested_action` via semver compare); `searchSkills` wraps it for API compatibility
 - `searchSkills` throws `NETWORK_ERROR` when the index cannot be fetched and no cache exists (failure is distinguishable from "no matches"); stale-cache offline fallback still applies
 - `findSkillIndexEntry` throws `AMBIGUOUS_SKILL` when a normalized name matches multiple distinct ids
@@ -73,7 +73,7 @@
 ### `lib/skill-manager.ts`
 
 - ZIP download / extract workflows; cache and install dirs use the canonical name resolved from `entry.id`; unique temp zip/extract names per fetch (concurrent installs of the same skill no longer clobber each other), canonical cache dir swapped in only after successful extraction; package size mismatches vs the index become `warnings[]`
-- Install and update orchestration; semver-based skip (no silent downgrade; explicit `--version` allows older versions); `--refresh` forces an index refresh for install; `updateAllSkills` returns `{ results, pruned }` with per-item `status` (`updated`/`up_to_date`/`stale`/`missing`/`failed`) and `code`; records whose install dir was manually deleted are reported `missing` and skipped (no resurrection), or `stale` when also delisted from the index (prunable via `--prune`)
+- Install and update orchestration; semver-based skip (no silent downgrade; explicit `--version` allows older versions); `--refresh` requests an index refresh for install (hash-verified sources only re-download when the manifest hash changes); `updateAllSkills` returns `{ results, pruned }` with per-item `status` (`updated`/`up_to_date`/`stale`/`missing`/`failed`) and `code`; records whose install dir was manually deleted are reported `missing` and skipped (no resurrection), or `stale` when also delisted from the index (prunable via `--prune`)
 - Local-modification detection before overwrite (`detectLocalModification` → `DownloadResult.localModified`); copy+state wrapped in `withStateLockAsync`
 - Agent reload hook (`restartAgentGateway`) is invoked by the CLI after successful install/update and returns `{ attempted, ok, command }` for the envelope
 
@@ -86,7 +86,7 @@
 - Config resolution / persistence checks
 - Input normalization checks; strict argument parsing (unknown flags/values, `--`, boolean synonyms)
 - Search filtering (multi-token AND) and pagination metadata tests
-- Index cache TTL / offline fallback / install-state annotation tests (local HTTP server)
+- Index cache hash/TTL / offline fallback / install-state annotation tests (local HTTP server with manifest simulation)
 - Error-code tests (`NETWORK_ERROR` / `INVALID_ARGS` / `SKILL_NOT_FOUND` / `VERSION_NOT_AVAILABLE` / `TARGET_NOT_CONFIGURED` / `STATE_LOCKED` / `AMBIGUOUS_SKILL`)
 - Agent contract tests (`tests/agent-contract.test.ts`): canonical naming + case-insensitive uninstall, no-downgrade, local-modified detection, missing-dir skip, HTML fallback rejection, managed list, content hash, unmanaged-dir refusal/`--force`, warnings envelope, non-semver update trigger, and spawned-process JSON envelope checks (unknown command/flag, aliases, `--json` everywhere, `not_installed`, dry-run, suggestions, blocked uninstall, status lock fields, clean dry-run, help exit_codes)
 - Safety/robustness tests: `tests/safe-name.test.ts` (segment validation, containment), `tests/version.test.ts` (semver/prerelease/non-semver), unzip hardening (CRC/symlink/ADS/limits/bomb), state robustness (atomic write, corrupt backup, S1/S2/S3), network policy (cross-origin) — 121 unit tests total; `npm run test:smoke` runs a 62-check live-registry smoke

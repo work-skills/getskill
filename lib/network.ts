@@ -9,6 +9,7 @@ import {
     getBaseUrl,
     getRequestTimeoutMs,
     getSkillsCacheDirectory,
+    INDEX_MANIFEST_TIMEOUT_MS,
     SKILLS_INDEX_CACHE_TTL_MS
 } from './config';
 import logger from './logger';
@@ -429,10 +430,12 @@ export function assertPackageUrlAllowed(url: string): void {
 interface CachedSkillsIndex {
     baseUrl: string;
     fetchedAt: string;
+    /** 下载时站点 manifest.json 的内容哈希；旧版缓存或无 manifest 的源为 null。 */
+    hash: string | null;
     skills: SkillIndexEntry[];
 }
 
-/** 本进程内是否已下载过索引，避免 update --all 逐个技能重复强制刷新。 */
+/** 本进程内是否已下载过索引（仅无 manifest 的旧式源使用），避免 update --all 逐个技能重复强制刷新。 */
 let indexDownloadedInProcess = false;
 
 export function getSkillsIndexCacheFilePath(): string {
@@ -460,19 +463,28 @@ function readSkillsIndexCache(): CachedSkillsIndex | null {
             return null;
         }
 
-        return parsed as CachedSkillsIndex;
+        return {
+            baseUrl: parsed.baseUrl,
+            fetchedAt: parsed.fetchedAt,
+            hash: typeof parsed.hash === 'string' ? parsed.hash : null,
+            skills: parsed.skills
+        } as CachedSkillsIndex;
     } catch {
         return null;
     }
 }
 
-function writeSkillsIndexCache(skills: SkillIndexEntry[]): void {
+function writeSkillsIndexCache(
+    skills: SkillIndexEntry[],
+    hash: string | null
+): void {
     try {
         const cacheFile = getSkillsIndexCacheFilePath();
         ensureDirectoryExists(path.dirname(cacheFile));
         const payload: CachedSkillsIndex = {
             baseUrl: getBaseUrl(),
             fetchedAt: new Date().toISOString(),
+            hash,
             skills
         };
         // 原子写：先写临时文件再 rename，避免并发读到半截 JSON
@@ -489,7 +501,8 @@ function writeSkillsIndexCache(skills: SkillIndexEntry[]): void {
 let lastIndexMeta: SkillsIndexMeta = {
     fetched_at: null,
     source: 'none',
-    stale: false
+    stale: false,
+    hash: null
 };
 
 export function getSkillsIndexMeta(): SkillsIndexMeta {
@@ -501,6 +514,7 @@ export function peekSkillsIndexCache(): {
     fetched_at: string;
     skill_count: number;
     stale: boolean;
+    hash: string | null;
 } | null {
     const cache = readSkillsIndexCache();
     if (!cache) {
@@ -510,7 +524,11 @@ export function peekSkillsIndexCache(): {
     return {
         fetched_at: cache.fetchedAt,
         skill_count: cache.skills.length,
-        stale: !(ageMs >= 0 && ageMs < SKILLS_INDEX_CACHE_TTL_MS)
+        // 有哈希的缓存以哈希为准（抓取时已验证最新），TTL 仅适用于无 manifest 的旧式源
+        stale: cache.hash
+            ? false
+            : !(ageMs >= 0 && ageMs < SKILLS_INDEX_CACHE_TTL_MS),
+        hash: cache.hash
     };
 }
 
@@ -522,15 +540,21 @@ export function readCachedIndexEntries(): SkillIndexEntry[] | null {
 /** 删除本地索引缓存并重置进程内刷新标记（clean / 测试使用）。 */
 export function clearSkillsIndexCache(): void {
     indexDownloadedInProcess = false;
-    lastIndexMeta = { fetched_at: null, source: 'none', stale: false };
+    lastIndexMeta = {
+        fetched_at: null,
+        source: 'none',
+        stale: false,
+        hash: null
+    };
     const cacheFile = getSkillsIndexCacheFilePath();
     if (fs.existsSync(cacheFile)) {
         fs.rmSync(cacheFile, { force: true });
     }
 }
 
-async function downloadSkillsIndex(): Promise<SkillIndexEntry[]> {
-    const url = getSkillsIndexUrl();
+async function downloadSkillsIndex(
+    url: string = getSkillsIndexUrl()
+): Promise<SkillIndexEntry[]> {
     const response = await request(url, { timeout: getRequestTimeoutMs() });
 
     if (!response.body || response.body.trim() === '') {
@@ -559,14 +583,164 @@ async function downloadSkillsIndex(): Promise<SkillIndexEntry[]> {
     );
 }
 
+/** manifest.json 探测结果：ok=可用；missing=站点未提供（回退 TTL 旧逻辑）；unreachable=网络不可达（离线回退缓存）。 */
+type IndexManifestResult =
+    | { kind: 'ok'; hash: string; skillsPath: string | null }
+    | { kind: 'missing' }
+    | { kind: 'unreachable' };
+
 /**
- * 获取技能索引：优先使用本地缓存（TTL 1 天），过期或强制刷新时重新下载；
- * 下载失败但存在旧缓存时回退到旧缓存，保证离线可用。
+ * 探测站点 manifest.json（约 1KB，含内容哈希与版本化索引路径）。
+ * 永不抛异常；超时取 INDEX_MANIFEST_TIMEOUT_MS 与全局超时的较小值，
+ * 保证离线时不会让用户等待完整的网络超时。
+ */
+async function fetchIndexManifest(): Promise<IndexManifestResult> {
+    const url = `${getBaseUrl()}/manifest.json`;
+    let response;
+    try {
+        response = await request(url, {
+            timeout: Math.min(getRequestTimeoutMs(), INDEX_MANIFEST_TIMEOUT_MS),
+            // 404 需要按状态码区分“站点未提供 manifest”与“网络不可达”
+            allowNonSuccessStatus: true
+        });
+    } catch {
+        return { kind: 'unreachable' };
+    }
+
+    if (response.statusCode === 404 || response.statusCode === 410) {
+        return { kind: 'missing' };
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        return { kind: 'unreachable' };
+    }
+
+    try {
+        const parsed = JSON.parse(response.body) as {
+            hash?: unknown;
+            skills?: unknown;
+        };
+        if (!parsed || typeof parsed.hash !== 'string' || !parsed.hash.trim()) {
+            return { kind: 'missing' };
+        }
+        return {
+            kind: 'ok',
+            hash: parsed.hash.trim(),
+            skillsPath:
+                typeof parsed.skills === 'string' && parsed.skills.trim()
+                    ? parsed.skills.trim()
+                    : null
+        };
+    } catch {
+        return { kind: 'missing' };
+    }
+}
+
+/** manifest 中的索引路径解析：相对路径拼接 base-url；绝对地址执行与技能包相同的同源策略。 */
+function resolveManifestIndexUrl(skillsPath: string | null): string {
+    if (!skillsPath) {
+        return getSkillsIndexUrl();
+    }
+    if (/^https?:\/\//i.test(skillsPath)) {
+        assertPackageUrlAllowed(skillsPath);
+        return skillsPath;
+    }
+    return `${getBaseUrl()}/${skillsPath.replace(/^\/+/, '')}`;
+}
+
+/**
+ * 获取技能索引：
+ * - 站点提供 manifest.json 时按内容哈希判断——哈希与本地缓存一致则不下载
+ *   （无论缓存多久、是否 forceRefresh），哈希变化才下载版本化索引；
+ * - manifest 网络不可达且存在缓存时直接回退缓存（离线可用）；
+ * - 站点未提供 manifest（404/无效）时回退旧式 TTL（1 天）逻辑；
+ * - 下载失败但存在旧缓存时回退到旧缓存。
  */
 export async function fetchSkillsIndex(
     options: FetchIndexOptions = {}
 ): Promise<SkillIndexEntry[]> {
     const cache = readSkillsIndexCache();
+    const manifest = await fetchIndexManifest();
+
+    if (manifest.kind === 'ok') {
+        if (cache && cache.hash === manifest.hash) {
+            logger.debug(
+                `索引哈希一致 (${manifest.hash})，使用本地缓存: ${getSkillsIndexCacheFilePath()}`
+            );
+            lastIndexMeta = {
+                fetched_at: cache.fetchedAt,
+                source: 'cache',
+                stale: false,
+                hash: manifest.hash
+            };
+            return cache.skills;
+        }
+
+        try {
+            let skills: SkillIndexEntry[];
+            try {
+                skills = await downloadSkillsIndex(
+                    resolveManifestIndexUrl(manifest.skillsPath)
+                );
+            } catch (error) {
+                // 版本化路径不存在（404/410）时再尝试一次旧式固定路径；其他错误不重试
+                const message =
+                    error instanceof Error ? error.message : String(error);
+                if (
+                    !manifest.skillsPath ||
+                    !/status code (404|410)/.test(message)
+                ) {
+                    throw error;
+                }
+                skills = await downloadSkillsIndex();
+            }
+            // --dry-run 预演承诺“不写任何文件”，只读模式下不落盘缓存
+            if (options.noCacheWrite !== true) {
+                writeSkillsIndexCache(skills, manifest.hash);
+            }
+            indexDownloadedInProcess = true;
+            lastIndexMeta = {
+                fetched_at: new Date().toISOString(),
+                source: 'remote',
+                stale: false,
+                hash: manifest.hash
+            };
+            return skills;
+        } catch (error) {
+            if (cache) {
+                const message =
+                    error instanceof Error ? error.message : String(error);
+                logger.warn(
+                    `技能索引下载失败，回退到本地缓存 (${cache.fetchedAt}): ${message}`
+                );
+                lastIndexMeta = {
+                    fetched_at: cache.fetchedAt,
+                    source: 'stale-cache',
+                    stale: true,
+                    hash: cache.hash
+                };
+                return cache.skills;
+            }
+            throw new GetSkillError(
+                'NETWORK_ERROR',
+                error instanceof Error ? error.message : String(error)
+            );
+        }
+    }
+
+    if (manifest.kind === 'unreachable' && cache) {
+        logger.warn(
+            `manifest.json 不可达，使用本地索引缓存 (${cache.fetchedAt})，内容可能非最新`
+        );
+        lastIndexMeta = {
+            fetched_at: cache.fetchedAt,
+            source: 'stale-cache',
+            stale: true,
+            hash: cache.hash
+        };
+        return cache.skills;
+    }
+
+    // 旧式源（无 manifest）：保留 TTL 逻辑
     const cacheAgeMs = cache
         ? Date.now() - Date.parse(cache.fetchedAt)
         : Number.POSITIVE_INFINITY;
@@ -584,7 +758,8 @@ export async function fetchSkillsIndex(
         lastIndexMeta = {
             fetched_at: cache.fetchedAt,
             source: 'cache',
-            stale: false
+            stale: false,
+            hash: null
         };
         return cache.skills;
     }
@@ -593,13 +768,14 @@ export async function fetchSkillsIndex(
         const skills = await downloadSkillsIndex();
         // --dry-run 预演承诺“不写任何文件”，只读模式下不落盘缓存
         if (options.noCacheWrite !== true) {
-            writeSkillsIndexCache(skills);
+            writeSkillsIndexCache(skills, null);
         }
         indexDownloadedInProcess = true;
         lastIndexMeta = {
             fetched_at: new Date().toISOString(),
             source: 'remote',
-            stale: false
+            stale: false,
+            hash: null
         };
         return skills;
     } catch (error) {
@@ -612,7 +788,8 @@ export async function fetchSkillsIndex(
             lastIndexMeta = {
                 fetched_at: cache.fetchedAt,
                 source: 'stale-cache',
-                stale: true
+                stale: true,
+                hash: cache.hash
             };
             return cache.skills;
         }
